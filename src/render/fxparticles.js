@@ -72,9 +72,9 @@ void main() {
   vec2 ax = vec2(c, s), ay = vec2(-s, c);
   vec2 corner = position.xy;
   float dist = -mvPosition.z;
-  // depth offsets are capped at about a metre so big old puffs do not show through
+  // depth offsets are capped below a metre so big old puffs do not show through
   // walls and cars standing in front of them
-  float rd = min(r, 1.0);
+  float rd = min(r, 0.9);
   vSph = vec4(mvPosition.z, rd, projectionMatrix[2][2], projectionMatrix[3][2]);
   mvPosition.xy += (ax * corner.x + ay * corner.y) * r;
   // pulled towards the camera so puffs mostly clear the bodywork they billow
@@ -130,7 +130,7 @@ void main() {
   // lie back, so where a puff meets bodywork or a wall the cut follows the cloud's
   // own billows instead of the straight edge of a flat quad (no depth texture for
   // true soft particles).
-  float zf = min(vSph.x + vSph.y * (uLift * 0.45 + 0.85 * dens), -1e-3);
+  float zf = min(vSph.x + vSph.y * (uLift * 0.4 + 0.55 * dens), -1e-3);
   gl_FragDepth = clamp(0.5 - 0.5 * (vSph.z * zf + vSph.w) / zf, 0.0, 1.0);
   #endif
   vec3 n = vec3(t.rg * 2.0 - 1.0, 0.0);

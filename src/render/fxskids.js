@@ -110,12 +110,30 @@ export class SkidMarks {
     this.recs = [];
     this.lastKey = -1; this.lastX = 0; this.lastZ = 0;
     this.lo = max; this.hi = -1;
+    this.surfaceAt = undefined; this.lookups = 0;
   }
 
   rec(key) {
     let r = this.recs[key];
     if (!r) r = this.recs[key] = { on: false, fresh: false, x: 0, z: 0, y: 0, lx: 0, lz: 0, rx: 0, rz: 0, nx: 0, nz: 1, a: 0, d: 0, kind: 0 };
     return r;
+  }
+
+  // The tyre-mark API carries no surface type. Use the world's own grid lookup when
+  // the game exposes it (main.js publishes window.game.world.surfaceAt); otherwise
+  // rely on the hints tyreSmoke gives for the same contact point.
+  surfaceKind(x, z, r) {
+    let f = this.surfaceAt;
+    if (f === undefined) {
+      const g = globalThis.game;
+      if (g && g.world && typeof g.world.surfaceAt === 'function') f = this.surfaceAt = g.world.surfaceAt;
+      else if (++this.lookups > 600) this.surfaceAt = null;
+    }
+    if (f) {
+      const k = KIND[f(x, z).type];
+      if (k !== undefined) return k;
+    }
+    return r.kind;
   }
 
   // Surface hint from the effects (tyre smoke is emitted at the same contact point).
@@ -130,6 +148,7 @@ export class SkidMarks {
     this.lastKey = key; this.lastX = x; this.lastZ = z;
     const r = this.rec(key);
     if (!(intensity > 0.05) || !(width > 0)) { r.on = false; return; }
+    r.kind = this.surfaceKind(x, z, r);
     const rut = r.kind > 0;
     const yy = y + 0.02;
     const target = rut ? Math.min(1, 0.3 + intensity * 1.4) : Math.min(0.85, 0.25 + intensity * 0.8);

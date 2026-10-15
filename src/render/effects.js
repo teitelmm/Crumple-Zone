@@ -18,7 +18,7 @@ const QUALITY = {
 
 // Particle presets (life range s, start/end radius m, peak opacity, fade-in s,
 // edge erosion, buoyancy m/s^2, air drag 1/s, wind coupling, swirl, spin rad/s).
-const P_TYRE = { life: [2.0, 3.2], r0: 0.32, r1: 2.3, alpha: 0.5, fadeIn: 0.12, erode: 0.55, buoy: 0.22, drag: 1.3, wind: 1, turb: 0.6, spin: 0.7 };
+const P_TYRE = { life: [2.0, 3.2], r0: 0.32, r1: 2.3, alpha: 0.5, fadeIn: 0.2, erode: 0.55, buoy: 0.22, drag: 1.3, wind: 1, turb: 0.6, spin: 0.7 };
 const P_DUST = { life: [1.8, 2.8], r0: 0.38, r1: 2.1, alpha: 0.6, fadeIn: 0.08, erode: 0.5, buoy: -0.04, drag: 1.8, wind: 0.8, turb: 0.4, spin: 0.5 };
 const P_STEAM = { life: [0.9, 1.5], r0: 0.12, r1: 1.0, alpha: 0.45, fadeIn: 0.06, erode: 0.75, buoy: 1.4, drag: 1.0, wind: 1.2, turb: 1.2, spin: 1.2 };
 const P_OIL = { life: [2.4, 3.6], r0: 0.18, r1: 2.6, alpha: 0.34, fadeIn: 0.1, erode: 0.55, buoy: 0.9, drag: 0.9, wind: 1.4, turb: 1.0, spin: 0.6 };
