@@ -32,7 +32,7 @@ class Game {
     this.scene = this.view.scene;
     this.camera = new THREE.PerspectiveCamera(60, 1, 0.25, 3000);
     this.rig = new CameraRig(this.camera, canvas);
-    this.effects = new Effects(this.scene);
+    this.effects = new Effects(this.scene, this.quality);
     this.input = new Input();
     this.input.bindTouch(document.getElementById('touch'));
     this.input.bindTouch(document.getElementById('topbar'));
@@ -82,7 +82,7 @@ class Game {
   resize() {
     const w = window.innerWidth, h = window.innerHeight;
     this.lifted = null;
-    this.renderer.setSize(w, h, false);
+    this.view.setSize(w, h);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
   }
@@ -93,7 +93,7 @@ class Game {
     const v = new Vehicle(spec, this.physics, { color: o.color || spec.color, name: o.name, isPlayer: o.isPlayer, tractionControl: this.ui.settings.tc });
     this.physics.add(v.body);
     v.spawn(o.x, o.z, o.heading || 0, o.speed || 0);
-    const view = new CarView(this.scene, v);
+    const view = new CarView(this.scene, v, this.quality);
     const entry = { vehicle: v, view, driver: null, name: o.name || spec.name, id: this.cars.length, isPlayer: !!o.isPlayer };
     this.cars.push(entry);
     if (o.isPlayer) this.player = entry;
@@ -280,7 +280,7 @@ class Game {
           if (this.input.enabled) { c.throttle = ctl.throttle; c.brake = ctl.brake; c.steer = ctl.steer; c.handbrake = ctl.handbrake; }
           else if (this.mode?.name !== 'Race') { c.throttle = 0; c.brake = 0; c.handbrake = 0; }
         } else if (e === this.showcaseCar) {
-          const c = e.vehicle.controls; c.throttle = 0; c.brake = 1; c.steer = 0;
+          const c = e.vehicle.controls; c.throttle = 0; c.brake = 1; c.steer = 0; c.hold = 1;
         }
         e.vehicle.update(h);
       }
@@ -365,7 +365,7 @@ class Game {
       }
     }
     const focus = this.state === 'menu' ? this.showcaseCar : this.player;
-    if (focus) this.view.followSun(new THREE.Vector3(...focus.vehicle.frame.c));
+    this.view.update(dt, this.camera, focus ? new THREE.Vector3(...focus.vehicle.frame.c) : null);
     if (this.state === 'play' && this.player) {
       this.audio.update(this.player.vehicle, this.timeScale, this.paused);
       this.ui.update(dt, this.player.vehicle, this.mode);
@@ -381,7 +381,7 @@ class Game {
     }
     const pr = this.renderer.getPixelRatio();
     this.effects.setViewport(this.renderer.domElement.height || window.innerHeight * pr, this.camera.fov);
-    this.renderer.render(this.scene, this.camera);
+    this.view.render(this.camera);
   }
 }
 

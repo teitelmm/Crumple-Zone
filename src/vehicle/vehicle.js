@@ -33,7 +33,7 @@ export class Vehicle {
     this.name = opts.name || spec.name;
     this.isPlayer = !!opts.isPlayer;
     this.tractionControl = opts.tractionControl ?? true;
-    this.controls = { throttle: 0, brake: 0, steer: 0, handbrake: 0 };
+    this.controls = { throttle: 0, brake: 0, steer: 0, handbrake: 0, hold: 0 }; // hold: brake without shifting to reverse
     this.events = [];
 
     const d = spec.dims;
@@ -170,13 +170,14 @@ export class Vehicle {
 
     // gear selection / reverse
     if (this.gear >= 1) {
-      if (c.brake > 0.5 && this.speedFwd < 0.8 && c.throttle < 0.1) {
+      if (c.brake > 0.5 && this.speedFwd < 0.8 && c.throttle < 0.1 && !c.hold) {
         this.revTimer += dt;
         if (this.revTimer > 0.3) { this.gear = -1; this.revTimer = 0; }
       } else this.revTimer = 0;
     } else if (c.throttle > 0.1 && this.speedFwd > -0.8) {
       this.gear = 1;
     }
+    if (c.hold && this.gear === -1) this.gear = 1;
     const reversing = this.gear === -1;
     const thr = this.engineDead ? 0 : (reversing ? c.brake : c.throttle);
     const brk = reversing ? c.throttle : c.brake;

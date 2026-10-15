@@ -196,7 +196,7 @@ tr.me td { color: var(--hazard); }
 @keyframes blink { 50% { opacity: 0.2; } }
 @media (prefers-reduced-motion: reduce) { .rec::before { animation: none; } #banner, #toast { transition: none; } }
 </style>
-<script type="importmap">{ "imports": { "three": "./vendor/three.module.min.js" } }</script>
+<script type="importmap">{ "imports": { "three": "./vendor/three.module.min.js", "three/addons/": "./vendor/addons/" } }</script>
 </head>
 <body>
 <canvas id="view" aria-label="Game view"></canvas>

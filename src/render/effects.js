@@ -1,6 +1,5 @@
 // Particles (tyre smoke, steam, sparks, glass), skid marks and loose wheels.
 import * as THREE from 'three';
-import { makeSprite } from './textures.js';
 import { makeWheelMesh } from './carview.js';
 
 const VS = `
@@ -167,8 +166,9 @@ class LooseWheel {
 }
 
 export class Effects {
-  constructor(scene) {
+  constructor(scene, quality = 'high') {
     this.scene = scene;
+    this.quality = quality;
     this.smoke = new ParticlePool(scene, 900, false);
     this.sparks = new ParticlePool(scene, 400, true);
     this.skids = new SkidMarks(scene);
@@ -230,4 +230,19 @@ export class Effects {
     for (const w of this.loose) w.dispose();
     this.loose = [];
   }
+}
+
+// Radial soft sprite for smoke/sparks
+function makeSprite() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const ctx = c.getContext('2d');
+  const g = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+  g.addColorStop(0, 'rgba(255,255,255,1)');
+  g.addColorStop(0.4, 'rgba(255,255,255,0.6)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 64, 64);
+  const t = new THREE.CanvasTexture(c);
+  return t;
 }

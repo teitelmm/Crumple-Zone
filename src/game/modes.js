@@ -87,12 +87,12 @@ export class Race {
       this.countdown -= dt;
       const n = Math.ceil(this.countdown);
       if (n !== this.lastBeep && n <= 3 && n >= 1) { this.lastBeep = n; g.audio.beep(520, 0.18); g.ui.banner(String(n), '', 0.9); }
-      for (const e of this.entries) { e.vehicle.controls.brake = 1; e.vehicle.controls.throttle = 0; }
+      for (const e of this.entries) { e.vehicle.controls.brake = 1; e.vehicle.controls.throttle = 0; e.vehicle.controls.hold = 1; }
       if (this.countdown <= 0) {
         g.audio.beep(880, 0.4, 0.16);
         g.ui.banner('GO', '', 0.8);
         g.input.enabled = true;
-        for (const e of this.entries) if (e.driver) e.driver.enabled = true;
+        for (const e of this.entries) { e.vehicle.controls.hold = 0; if (e.driver) e.driver.enabled = true; }
       }
       return;
     }

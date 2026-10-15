@@ -70,8 +70,9 @@ export function makeWheelMesh(spec) {
 }
 
 export class CarView {
-  constructor(scene, vehicle) {
+  constructor(scene, vehicle, quality = 'high') {
     this.scene = scene;
+    this.quality = quality;
     this.vehicle = vehicle;
     const spec = vehicle.spec;
     const src = getMesh(spec, vehicle.tpl);

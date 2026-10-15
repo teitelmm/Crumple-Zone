@@ -40,7 +40,8 @@ export class RaceDriver {
 
   update(dt) {
     const v = this.v, c = v.controls;
-    if (!this.enabled) { c.throttle = 0; c.brake = 1; c.steer = 0; c.handbrake = 0; return; }
+    if (!this.enabled) { c.throttle = 0; c.brake = 1; c.steer = 0; c.handbrake = 0; c.hold = 1; return; }
+    c.hold = 0;
     const pts = this.track.pts, N = pts.length;
     const prog = trackProgress(this.track, v.frame.c[0], v.frame.c[2], this.idx);
     this.idx = prog.index;
@@ -85,7 +86,8 @@ export class DerbyDriver {
   update(dt) {
     const v = this.v, c = v.controls;
     if (v.engineDead || v.out) { c.throttle = 0; c.brake = 0; c.steer = 0; return; }
-    if (this.delay > 0) { this.delay -= dt; c.throttle = 0; c.brake = 1; return; }
+    if (this.delay > 0) { this.delay -= dt; c.throttle = 0; c.brake = 1; c.hold = 1; return; }
+    c.hold = 0;
     this.retarget -= dt;
     const cars = this.getCars().filter(o => o !== v && !o.out);
     if (!cars.length) { c.throttle = 0; c.brake = 1; c.steer = 0; return; }
