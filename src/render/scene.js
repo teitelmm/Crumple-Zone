@@ -1,35 +1,47 @@
-// Renderer, sky, lighting, reflections and the frame render (post-processing goes here).
+// Renderer, sky, lighting, reflections and the frame render.
+//
+// One sun (sky.js SUN_DIR) drives everything: the sky dome and its clouds, the
+// shadow-casting DirectionalLight, the aerial-perspective fog and the
+// prefiltered environment map used for paint/glass reflections and ambient
+// light. Post-processing (post.js) runs on 'medium' and 'high'; 'low' renders
+// straight to the canvas with the same tone curve.
+//
+// Handy values for other modules (all on WorldView):
+//   sunDirection (unit THREE.Vector3 toward the sun), sunColor, sunIntensity,
+//   horizonColor (THREE.Color, linear; same object as scene.fog.color),
+//   skyIrradiance (THREE.Color), hazeAt(dir, outColor) (horizon haze colour for
+//   a view direction, what distant things fade into), exposure.
 import * as THREE from 'three';
 import { Environment } from './environment.js';
+import { SkyDome, SUN_DIR, SUN_COLOR, SUN_ILLUMINANCE, HORIZON_COLOR, SKY_IRRADIANCE, hazeRadiance } from './sky.js';
+import { SunRig, installLightingChunks } from './lighting.js';
+import { createPost, installToneMapping } from './post.js';
 
-export function createRenderer(canvas, quality) {
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: quality === 'high', powerPreference: 'high-performance' });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, quality === 'high' ? 2 : 1.25));
-  renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.0;
-  renderer.outputColorSpace = THREE.SRGBColorSpace;
-  renderer.shadowMap.enabled = quality !== 'low';
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-  return renderer;
+// sunlit 18% grey -> ~60% sRGB, sunlit white ~91%, clouds ~95%, shaded asphalt
+// ~17% (see the tone curve in post.js)
+const EXPOSURE = 0.85;
+// pixel budgets (drawing-buffer pixels) per tier; the tier caps DPR as before
+const DPR_CAP = { high: 2, medium: 1.25, low: 1.25 };
+const PIXEL_BUDGET = { high: 2560 * 1440, medium: 1920 * 1080, low: 1280 * 720 * 1.1 };
+
+function pixelRatioFor(quality, w, h) {
+  const dpr = Math.min(window.devicePixelRatio || 1, DPR_CAP[quality] || 1.25);
+  const budget = PIXEL_BUDGET[quality] || PIXEL_BUDGET.medium;
+  const fit = Math.sqrt(budget / Math.max(1, w * h));
+  return Math.max(Math.min(dpr, fit), Math.min(1, dpr));
 }
 
-function skyMaterial() {
-  return new THREE.ShaderMaterial({
-    side: THREE.BackSide,
-    depthWrite: false,
-    uniforms: {
-      top: { value: new THREE.Color('#3f74b8') },
-      mid: { value: new THREE.Color('#a9c6e2') },
-      bottom: { value: new THREE.Color('#d9dccf') },
-      sunDir: { value: new THREE.Vector3(0.5, 0.6, 0.3).normalize() },
-    },
-    vertexShader: `varying vec3 vDir; void main(){ vDir = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); gl_Position.z = gl_Position.w; }`,
-    fragmentShader: `uniform vec3 top; uniform vec3 mid; uniform vec3 bottom; uniform vec3 sunDir; varying vec3 vDir;
-      void main(){ float h = vDir.y; vec3 c = h > 0.0 ? mix(mid, top, pow(clamp(h,0.0,1.0),0.6)) : bottom;
-      c = mix(bottom, c, smoothstep(-0.02, 0.06, h));
-      float s = max(dot(normalize(vDir), sunDir), 0.0); c += vec3(1.0,0.9,0.7) * (pow(s, 600.0) * 3.0 + pow(s, 12.0) * 0.18);
-      gl_FragColor = vec4(c, 1.0); }`,
-  });
+export function createRenderer(canvas, quality) {
+  installLightingChunks();
+  // MSAA happens in the HDR target on 'high', FXAA on 'medium'; the canvas itself never needs it
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, stencil: false, powerPreference: 'high-performance' });
+  renderer.setPixelRatio(pixelRatioFor(quality, window.innerWidth, window.innerHeight));
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  installToneMapping(renderer, EXPOSURE);
+  renderer.shadowMap.enabled = quality !== 'low';
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.setClearColor(HORIZON_COLOR, 1);
+  return renderer;
 }
 
 export class WorldView {
@@ -38,47 +50,65 @@ export class WorldView {
     this.world = world;
     this.quality = quality;
     const scene = this.scene = new THREE.Scene();
-    scene.fog = new THREE.Fog('#c7d3dc', 250, 1300);
 
-    const sky = new THREE.Mesh(new THREE.SphereGeometry(1500, 32, 16), skyMaterial());
-    sky.renderOrder = -20;
-    sky.frustumCulled = false;
-    scene.add(sky);
-    this.sky = sky;
+    this.sunDirection = SUN_DIR.clone();
+    this.sunColor = SUN_COLOR.clone();
+    this.sunIntensity = SUN_ILLUMINANCE;
+    this.skyIrradiance = SKY_IRRADIANCE.clone();
+    this._exposure = EXPOSURE;
+    this._haze = [0, 0, 0];
+    this._invRef = new THREE.Color(1 / HORIZON_COLOR.r, 1 / HORIZON_COLOR.g, 1 / HORIZON_COLOR.b);
 
-    // environment map for car paint reflections
-    const pm = new THREE.PMREMGenerator(renderer);
-    const envScene = new THREE.Scene();
-    const envSky = new THREE.Mesh(new THREE.SphereGeometry(100, 32, 16), skyMaterial());
-    envScene.add(envSky);
-    const envGround = new THREE.Mesh(new THREE.CircleGeometry(90, 24).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: '#4b5a3a' }));
-    envGround.position.y = -2;
-    envScene.add(envGround);
-    scene.environment = pm.fromScene(envScene, 0.02).texture;
-    pm.dispose();
+    // aerial perspective: clear near by, ~7% haze at 500 m, ~36% at 1 km, ~95% by
+    // 2.2 km (see lighting.js). near/far are chosen so shaders that do their own
+    // smoothstep(fogNear, fogFar, depth) get nearly the same amounts.
+    scene.fog = new THREE.Fog(HORIZON_COLOR.clone(), 120, 2200);
+    this.horizonColor = scene.fog.color;
 
-    const hemi = new THREE.HemisphereLight('#cfe1f5', '#5b5a44', 0.9);
-    scene.add(hemi);
-    const sun = this.sun = new THREE.DirectionalLight('#fff4e0', 2.6);
-    sun.position.set(50, 60, 30);
-    sun.castShadow = quality !== 'low';
-    sun.shadow.mapSize.set(quality === 'high' ? 2048 : 1024, quality === 'high' ? 2048 : 1024);
-    const sc = sun.shadow.camera;
-    sc.left = -40; sc.right = 40; sc.top = 40; sc.bottom = -40; sc.near = 1; sc.far = 200;
-    sun.shadow.bias = -0.0004;
-    sun.shadow.normalBias = 0.03;
-    scene.add(sun);
-    scene.add(sun.target);
-    this.sunOffset = new THREE.Vector3(50, 60, 30);
+    this.skyDome = new SkyDome(scene, quality);
+    this.sky = this.skyDome.mesh;
+
+    // reflections + image-based ambient from the same sky (plus lit ground and a hazy horizon band)
+    scene.environment = this.skyDome.buildEnvironment(renderer);
+    scene.environmentIntensity = 1.0;
+
+    // sky + ground-bounce irradiance for non-PBR materials only (lighting.js keeps
+    // it off materials that already get ambient from scene.environment)
+    const bounce = new THREE.Color(0.09, 0.1, 0.075).multiply(
+      SUN_COLOR.clone().multiplyScalar(SUN_ILLUMINANCE * SUN_DIR.y).add(SKY_IRRADIANCE));
+    // (clouds and the bright horizon make real skylight less blue than clear-sky single scattering)
+    const skyFill = SKY_IRRADIANCE.clone();
+    const lum = skyFill.r * 0.2126 + skyFill.g * 0.7152 + skyFill.b * 0.0722;
+    skyFill.lerp(new THREE.Color(lum, lum, lum), 0.35);
+    // x1.3: the clouds in the environment add about that much to the PBR ambient,
+    // so Lambert and Standard surfaces in shade come out alike
+    this.hemi = new THREE.HemisphereLight(skyFill, bounce, 1.3);
+    scene.add(this.hemi);
+
+    this.sunRig = new SunRig(scene, quality);
+    this.sun = this.sunRig.light;
 
     this.env = new Environment(this);
+    this.post = createPost(renderer, scene, quality, EXPOSURE);
   }
 
-  followSun(target) {
-    this.sun.position.set(target.x + this.sunOffset.x, target.y + this.sunOffset.y, target.z + this.sunOffset.z);
-    this.sun.target.position.copy(target);
+  // horizon haze (linear radiance) toward `dir`, scaled by any fog colour change
+  hazeAt(dir, out = new THREE.Color()) {
+    const c = hazeRadiance(dir, this._haze);
+    return out.setRGB(c[0], c[1], c[2]).multiply(this.horizonColor).multiply(this._invRef);
   }
 
+  // exposure multiplier ahead of the tone curve, applied on every tier
+  get exposure() { return this._exposure; }
+  set exposure(v) {
+    this._exposure = v;
+    this.renderer.toneMappingExposure = v;
+    if (this.post) this.post.exposure = v;
+  }
+
+  followSun(target, camera = null) {
+    this.sunRig.follow(target, camera);
+  }
 
   // ---- seams used by main.js
   addColliderMesh(c) { return this.env.addColliderMesh(c); }
@@ -86,15 +116,24 @@ export class WorldView {
 
   // called once per frame before render; focus = THREE.Vector3 the camera follows
   update(dt, camera, focus) {
-    if (focus) this.followSun(focus);
+    this.skyDome.update(dt, camera);
+    if (focus) this.followSun(focus, camera);
+    else if (camera) this.followSun(camera.position, camera);
     this.env.update(dt, camera);
   }
 
   setSize(w, h) {
+    const pr = pixelRatioFor(this.quality, w, h);
+    if (pr !== this.renderer.getPixelRatio()) this.renderer.setPixelRatio(pr);
     this.renderer.setSize(w, h, false);
+    if (this.post) {
+      const s = this.renderer.getDrawingBufferSize(new THREE.Vector2());
+      this.post.setSize(s.x, s.y);
+    }
   }
 
   render(camera) {
-    this.renderer.render(this.scene, camera);
+    if (this.post) this.post.render(camera);
+    else this.renderer.render(this.scene, camera);
   }
 }
