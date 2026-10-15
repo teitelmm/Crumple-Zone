@@ -1,0 +1,347 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Crumple Zone</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="description" content="Soft-body car crash and racing game in the browser: Audi A4, Mazda MX-5 Miata and Ford Mustang EcoBoost.">
+<meta name="theme-color" content="#0f1113">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700;800&family=Barlow:wght@400;500;600&display=swap">
+<style>
+/* Layout: full-bleed WebGL view; HUD pinned to the corners; menu = two glass rails framing the live car. */
+:root {
+  --ink: #0f1113;
+  --panel: rgba(15, 17, 20, 0.78);
+  --panel-solid: #16191d;
+  --line: rgba(232, 238, 242, 0.12);
+  --fg: #eef0f1;
+  --mute: #9aa4ab;
+  --hazard: #f2b705;
+  --hazard-ink: #1a1505;
+  --alarm: #eb4028;
+  --ok: #86c99c;
+  --font-display: "Barlow Condensed", "Arial Narrow", "Roboto Condensed", system-ui, sans-serif;
+  --font-body: "Barlow", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --r: 6px;
+  --sat: env(safe-area-inset-top, 0px);
+  --sab: env(safe-area-inset-bottom, 0px);
+  --sal: env(safe-area-inset-left, 0px);
+  --sar: env(safe-area-inset-right, 0px);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { height: 100%; margin: 0; overflow: hidden; background: var(--ink); color: var(--fg); font-family: var(--font-body); font-size: 14px; -webkit-tap-highlight-color: transparent; }
+body { overscroll-behavior: none; touch-action: none; user-select: none; -webkit-user-select: none; }
+#view { position: fixed; inset: 0; width: 100%; height: 100%; display: block; background: #9fb4c6; }
+button { font: inherit; color: inherit; cursor: pointer; }
+button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--hazard); outline-offset: 2px; }
+dl, dt, dd { margin: 0; }
+
+/* ---------- loading */
+#loading { position: fixed; inset: 0; display: grid; place-items: center; background: var(--ink); z-index: 50; font-family: var(--font-display); font-size: 22px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--mute); text-align: center; padding: 24px; }
+
+/* ---------- menu */
+#menu { position: fixed; inset: 0; z-index: 20; display: grid; grid-template-columns: minmax(300px, 380px) 1fr minmax(320px, 420px); gap: 0;
+  padding-top: calc(16px + var(--sat)); padding-bottom: calc(16px + var(--sab)); padding-left: max(16px, var(--sal)); padding-right: max(16px, var(--sar));
+  pointer-events: none; }
+#menu > * { pointer-events: auto; }
+.rail { background: var(--panel); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border: 1px solid var(--line); border-radius: var(--r); padding: 20px; overflow-y: auto; min-height: 0; display: flex; flex-direction: column; gap: 18px; touch-action: pan-y; }
+.rail-left { grid-column: 1; }
+.rail-right { grid-column: 3; }
+.brand { display: flex; align-items: center; gap: 12px; }
+.brand svg { width: 44px; height: 44px; flex: none; }
+.wordmark { font-family: var(--font-display); font-weight: 800; font-size: 40px; line-height: 0.9; letter-spacing: 0.01em; text-transform: uppercase; }
+.wordmark small { display: block; font-weight: 600; font-size: 13px; letter-spacing: 0.18em; color: var(--hazard); margin-top: 6px; }
+.label { font-family: var(--font-display); font-weight: 600; font-size: 13px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--mute); margin: 0 0 8px; }
+.stack { display: flex; flex-direction: column; gap: 8px; }
+.mode-tile, .car-tile { text-align: left; background: rgba(255,255,255,0.03); border: 1px solid var(--line); border-radius: var(--r); padding: 12px 14px; display: flex; flex-direction: column; gap: 3px; transition: border-color .15s, background .15s; }
+.mode-tile:hover, .car-tile:hover { background: rgba(255,255,255,0.06); }
+.mode-tile.sel, .car-tile.sel { border-color: var(--hazard); background: rgba(242,183,5,0.08); box-shadow: inset 3px 0 0 var(--hazard); }
+.tile-name, .car-name { font-family: var(--font-display); font-weight: 700; font-size: 20px; letter-spacing: 0.02em; text-transform: uppercase; }
+.tile-desc, .car-blurb { color: var(--mute); font-size: 13px; line-height: 1.4; }
+.car-tile { display: grid; grid-template-columns: 14px 1fr; column-gap: 10px; }
+.car-tile > *:not(.swatch) { grid-column: 2; }
+.swatch { grid-row: 1 / span 2; width: 14px; height: 14px; border-radius: 50%; margin-top: 5px; border: 1px solid rgba(255,255,255,0.35); }
+.car-trim { color: var(--mute); font-size: 12px; }
+.spec { display: none; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px 10px; margin: 8px 0 6px; }
+.car-tile.sel .spec { display: grid; }
+.car-blurb { display: none; }
+.car-tile.sel .car-blurb { display: block; }
+.spec dt { font-size: 11px; color: var(--mute); letter-spacing: 0.06em; text-transform: uppercase; }
+.spec dd { font-family: var(--font-display); font-weight: 600; font-size: 16px; font-variant-numeric: tabular-nums; }
+.opts { display: flex; flex-direction: column; gap: 10px; }
+.field { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 6px 10px; }
+.field label { font-size: 13px; color: var(--mute); }
+.field output { font-family: var(--font-display); font-weight: 600; font-size: 15px; font-variant-numeric: tabular-nums; }
+.field input[type=range] { grid-column: 1 / -1; width: 100%; accent-color: var(--hazard); }
+select { background: var(--panel-solid); color: var(--fg); border: 1px solid var(--line); border-radius: var(--r); padding: 7px 8px; font: inherit; width: 100%; grid-column: 1 / -1; }
+.settings { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.settings .field { grid-template-columns: 1fr; }
+.settings select { grid-column: auto; }
+.check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--mute); }
+.check input { accent-color: var(--hazard); width: 18px; height: 18px; }
+.primary { background: var(--hazard); color: var(--hazard-ink); border: 0; border-radius: var(--r); padding: 15px 18px; font-family: var(--font-display); font-weight: 800; font-size: 22px; letter-spacing: 0.06em; text-transform: uppercase; width: 100%; }
+.primary:hover { filter: brightness(1.08); }
+.ghost { background: transparent; border: 1px solid var(--line); border-radius: var(--r); padding: 10px 12px; font-family: var(--font-display); font-weight: 600; font-size: 15px; letter-spacing: 0.06em; text-transform: uppercase; }
+.ghost:hover { border-color: rgba(255,255,255,0.35); }
+.row { display: flex; gap: 8px; flex-wrap: wrap; }
+.row > * { flex: 1 1 auto; }
+.note { font-size: 12px; color: var(--mute); line-height: 1.45; }
+#help { font-size: 13px; line-height: 1.55; color: var(--mute); }
+#help b { color: var(--fg); font-weight: 600; }
+#help h4 { font-family: var(--font-display); font-size: 14px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--fg); margin: 10px 0 4px; }
+.kbd { display: inline-block; min-width: 22px; padding: 1px 6px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; font-family: var(--font-display); font-weight: 600; color: var(--fg); text-align: center; }
+.rotate-hint { display: none; }
+.showcase-tag { grid-column: 2; align-self: end; justify-self: center; font-family: var(--font-display); font-size: 13px; letter-spacing: 0.2em; text-transform: uppercase; color: rgba(255,255,255,0.75); text-shadow: 0 1px 6px rgba(0,0,0,0.6); padding-bottom: 6px; }
+
+@media (max-width: 900px) {
+  #menu { grid-template-columns: 1fr; grid-auto-rows: min-content; overflow-y: auto; touch-action: pan-y; pointer-events: auto; gap: 12px; background: linear-gradient(to bottom, rgba(15,17,19,0.25), rgba(15,17,19,0.85) 45%); }
+  .rail-left, .rail-right { grid-column: 1; overflow: visible; }
+  .showcase-tag { display: none; }
+  .rail-left { margin-top: 42vh; }
+  .rotate-hint { display: block; }
+  .start-wrap { position: sticky; bottom: 0; padding-top: 8px; background: linear-gradient(to bottom, transparent, var(--panel-solid) 30%); }
+}
+@media (orientation: landscape) and (max-height: 520px) {
+  #menu { grid-template-columns: 1fr 1fr; overflow-y: auto; background: rgba(15,17,19,0.7); }
+  .rail-left { grid-column: 1; margin-top: 0; }
+  .rail-right { grid-column: 2; }
+  .rotate-hint { display: none; }
+  .wordmark { font-size: 30px; }
+}
+
+/* ---------- HUD */
+#hud { position: fixed; inset: 0; z-index: 10; pointer-events: none; }
+#hud .panel { position: absolute; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); padding: 10px 12px; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+#modePanel { top: calc(12px + var(--sat)); left: calc(12px + var(--sal)); min-width: 170px; }
+#modeName { font-family: var(--font-display); font-weight: 700; font-size: 16px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--hazard); margin-bottom: 4px; }
+#modeInfo div, #damagePanel dl div { display: flex; justify-content: space-between; gap: 14px; font-size: 13px; line-height: 1.6; }
+#modeInfo dt, #damagePanel dt { color: var(--mute); }
+#modeInfo dd, #damagePanel dd { font-family: var(--font-display); font-weight: 600; font-size: 15px; font-variant-numeric: tabular-nums; }
+#damagePanel { top: calc(12px + var(--sat)); right: calc(12px + var(--sar)); display: grid; grid-template-columns: auto 1fr; gap: 10px; align-items: center; }
+#damagePanel .dtitle { grid-column: 1 / -1; font-family: var(--font-display); font-weight: 600; font-size: 12px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--mute); margin-bottom: -4px; }
+#dmgMap { width: 64px; height: 108px; }
+dd[data-state=warn] { color: var(--hazard); }
+dd[data-state=bad] { color: var(--alarm); }
+#speedo { position: absolute; right: calc(16px + var(--sar)); bottom: calc(14px + var(--sab)); width: 190px; height: 190px; }
+#tach { position: absolute; inset: 0; width: 100%; height: 100%; }
+.dial { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-shadow: 0 1px 8px rgba(0,0,0,0.55); }
+#spd { font-family: var(--font-display); font-weight: 800; font-size: 58px; line-height: 0.9; font-variant-numeric: tabular-nums; }
+#unit { font-family: var(--font-display); font-weight: 600; font-size: 13px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--mute); }
+#gear { margin-top: 6px; font-family: var(--font-display); font-weight: 800; font-size: 22px; color: var(--hazard); width: 34px; height: 34px; border: 2px solid var(--hazard); border-radius: 50%; display: grid; place-items: center; }
+.flags { position: absolute; bottom: 4px; left: 0; right: 0; display: flex; justify-content: center; gap: 6px; }
+.flag { font-family: var(--font-display); font-weight: 700; font-size: 11px; letter-spacing: 0.12em; padding: 1px 6px; border-radius: 3px; border: 1px solid var(--line); color: var(--mute); }
+.flag.on { color: var(--ok); border-color: rgba(134,201,156,0.5); }
+#boostFlag { background: linear-gradient(to right, rgba(242,183,5,0.45) calc(var(--b, 0) * 100%), transparent 0); color: var(--fg); }
+#topbar { position: absolute; top: calc(10px + var(--sat)); left: 50%; transform: translateX(-50%); display: flex; gap: 6px; pointer-events: auto; }
+#topbar button { width: 42px; height: 42px; border-radius: 50%; background: var(--panel); border: 1px solid var(--line); display: grid; place-items: center; padding: 0; touch-action: none; }
+#topbar button:hover { border-color: rgba(255,255,255,0.4); }
+#topbar svg { width: 20px; height: 20px; stroke: var(--fg); fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+#banner { position: absolute; left: 50%; top: 32%; transform: translate(-50%, -50%) scale(0.96); text-align: center; opacity: 0; transition: opacity .25s, transform .25s; width: min(90vw, 640px); text-shadow: 0 2px 16px rgba(0,0,0,0.6); }
+#banner.show { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+.b-title { font-family: var(--font-display); font-weight: 800; font-size: clamp(36px, 7vw, 92px); line-height: 0.95; text-transform: uppercase; letter-spacing: 0.02em; }
+.b-sub { font-size: 16px; color: #dfe3e6; margin-top: 8px; text-wrap: balance; }
+#toast { position: absolute; left: 50%; top: calc(64px + var(--sat)); transform: translateX(-50%); background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--hazard); border-radius: var(--r); padding: 8px 14px; font-family: var(--font-display); font-weight: 600; font-size: 16px; letter-spacing: 0.04em; opacity: 0; transition: opacity .2s; white-space: nowrap; }
+#toast.show { opacity: 1; }
+#keyHint { position: absolute; left: calc(12px + var(--sal)); bottom: calc(12px + var(--sab)); font-size: 12px; color: rgba(255,255,255,0.7); text-shadow: 0 1px 4px rgba(0,0,0,0.7); line-height: 1.7; }
+#hud.replaying > :not(#banner):not(#toast) { display: none; }
+body.touch #keyHint { display: none; }
+body.touch #speedo { right: auto; left: 50%; transform: translateX(-50%); bottom: calc(6px + var(--sab)); width: auto; height: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 4px 6px 4px 16px; }
+body.touch #tach, body.touch .flags { display: none; }
+body.touch .dial { position: static; flex-direction: row; align-items: baseline; gap: 8px; }
+body.touch #spd { font-size: 34px; }
+body.touch #gear { margin: 0 0 0 4px; align-self: center; width: 30px; height: 30px; font-size: 18px; }
+body.touch #damagePanel { padding: 8px; }
+@media (max-width: 760px), (max-height: 480px) {
+  #modePanel { min-width: 0; padding: 6px 9px; }
+  #modeInfo div:nth-child(n+3) { display: none; }
+  #damagePanel dl { display: none; }
+  #damagePanel .dtitle { display: none; }
+  #dmgMap { width: 46px; height: 78px; }
+  #topbar button { width: 38px; height: 38px; }
+  #modeName { font-size: 13px; }
+}
+
+/* ---------- touch controls */
+#touch { position: fixed; inset: 0; z-index: 11; pointer-events: none; }
+#touch button { pointer-events: auto; touch-action: none; position: absolute; border: 1px solid rgba(255,255,255,0.22); background: rgba(15,17,20,0.42); color: var(--fg); border-radius: 18px; font-family: var(--font-display); font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; display: grid; place-items: center; backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px); }
+#touch button.on { background: rgba(242,183,5,0.4); border-color: var(--hazard); }
+#touch svg { width: 34px; height: 34px; fill: var(--fg); }
+.t-left { left: calc(18px + var(--sal)); bottom: calc(22px + var(--sab)); width: 92px; height: 92px; }
+.t-right { left: calc(122px + var(--sal)); bottom: calc(22px + var(--sab)); width: 92px; height: 92px; }
+.t-gas { right: calc(18px + var(--sar)); bottom: calc(22px + var(--sab)); width: 88px; height: 150px; font-size: 18px; }
+.t-brake { right: calc(118px + var(--sar)); bottom: calc(22px + var(--sab)); width: 88px; height: 96px; font-size: 16px; }
+.t-hb { right: calc(118px + var(--sar)); bottom: calc(128px + var(--sab)); width: 88px; height: 44px; font-size: 13px; border-radius: 12px !important; }
+
+/* ---------- overlays */
+.overlay { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; background: rgba(8,9,11,0.62); backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
+  padding-top: calc(16px + var(--sat)); padding-bottom: calc(16px + var(--sab)); padding-left: max(16px, var(--sal)); padding-right: max(16px, var(--sar)); }
+.card { background: var(--panel-solid); border: 1px solid var(--line); border-radius: var(--r); padding: 22px; width: min(560px, 100%); max-height: 100%; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; touch-action: pan-y; }
+.card h2 { margin: 0; font-family: var(--font-display); font-weight: 800; font-size: 32px; text-transform: uppercase; letter-spacing: 0.02em; text-wrap: balance; }
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th { text-align: left; font-family: var(--font-display); font-weight: 600; font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--mute); padding: 6px 8px; border-bottom: 1px solid var(--line); }
+td { padding: 8px; border-bottom: 1px solid var(--line); font-size: 14px; }
+td:last-child { font-family: var(--font-display); font-weight: 600; font-size: 16px; }
+tr.me td { color: var(--hazard); }
+#teleports { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
+#replayBar { position: fixed; z-index: 25; left: 50%; transform: translateX(-50%); bottom: calc(18px + var(--sab)); display: flex; gap: 8px; align-items: center; background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 6px 8px 6px 16px; }
+.rec { font-family: var(--font-display); font-weight: 700; letter-spacing: 0.18em; color: var(--alarm); display: flex; align-items: center; gap: 8px; }
+.rec::before { content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--alarm); animation: blink 1s steps(2) infinite; }
+#replayBar .ghost { border-radius: 999px; padding: 6px 14px; }
+@keyframes blink { 50% { opacity: 0.2; } }
+@media (prefers-reduced-motion: reduce) { .rec::before { animation: none; } #banner, #toast { transition: none; } }
+</style>
+<script type="importmap">{ "imports": { "three": "./vendor/three.module.min.js" } }</script>
+</head>
+<body>
+<canvas id="view" aria-label="Game view"></canvas>
+<div id="loading">Building Crumple Valley…</div>
+
+<!-- main menu -->
+<div id="menu">
+  <section class="rail rail-left" aria-label="Game mode">
+    <div class="brand">
+      <svg viewBox="0 0 44 44" aria-hidden="true"><circle cx="22" cy="22" r="20" fill="#f2b705"/><path d="M22 22 L42 22 A20 20 0 0 1 22 42 Z" fill="#121212"/><path d="M22 22 L2 22 A20 20 0 0 1 22 2 Z" fill="#121212"/><circle cx="22" cy="22" r="20" fill="none" stroke="#121212" stroke-width="2.5"/></svg>
+      <div class="wordmark">Crumple Zone<small>Soft-body crash &amp; race</small></div>
+    </div>
+    <p class="note rotate-hint">Turn your phone sideways for the best view.</p>
+    <div>
+      <h3 class="label">Mode</h3>
+      <div class="stack" id="modeList" role="radiogroup" aria-label="Mode"></div>
+    </div>
+    <div id="opts-race" class="opts">
+      <h3 class="label">Race setup</h3>
+      <div class="field"><label for="optLaps">Laps</label><output id="vLaps">3</output><input id="optLaps" type="range" min="1" max="6" step="1"></div>
+      <div class="field"><label for="optOpp">AI opponents</label><output id="vOpp">3</output><input id="optOpp" type="range" min="1" max="5" step="1"></div>
+    </div>
+    <div id="opts-derby" class="opts" hidden>
+      <h3 class="label">Derby setup</h3>
+      <div class="field"><label for="optDerbyOpp">AI opponents</label><output id="vDerbyOpp">4</output><input id="optDerbyOpp" type="range" min="1" max="7" step="1"></div>
+    </div>
+    <div id="opts-lab" class="opts" hidden>
+      <h3 class="label">Test setup</h3>
+      <div class="field"><label for="optSpeed">Impact speed</label><output id="vSpeed">56 km/h</output><input id="optSpeed" type="range" min="10" max="160" step="1"></div>
+      <div class="field"><label for="optObstacle">Barrier</label><select id="optObstacle"></select></div>
+      <div class="field" id="targetRow"><label for="optTarget">Other car</label><select id="optTarget"></select></div>
+      <p class="note">56 km/h (35 mph) is the standard full-frontal test speed. The impact replays at quarter speed, then you get the damage report.</p>
+    </div>
+  </section>
+  <div class="showcase-tag" id="showcaseTag">Live soft-body model</div>
+  <section class="rail rail-right" aria-label="Car and settings">
+    <div>
+      <h3 class="label">Car</h3>
+      <div class="stack" id="carList" role="radiogroup" aria-label="Car"></div>
+    </div>
+    <div>
+      <h3 class="label">Settings</h3>
+      <div class="settings">
+        <div class="field"><label for="setUnits">Units</label><select id="setUnits"><option value="mph">mph</option><option value="kmh">km/h</option></select></div>
+        <div class="field"><label for="setQuality">Graphics</label><select id="setQuality"><option value="auto">Auto</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low (phones)</option></select></div>
+        <label class="check"><input id="setTC" type="checkbox"> Traction control</label>
+        <div class="field"><label for="setVol">Volume</label><input id="setVol" type="range" min="0" max="1" step="0.05"></div>
+      </div>
+    </div>
+    <div class="row">
+      <button class="ghost" id="helpBtn">Controls</button>
+      <button class="ghost" id="fullscreenBtn">Fullscreen</button>
+    </div>
+    <div id="help" hidden>
+      <h4>Keyboard</h4>
+      <span class="kbd">W</span> <span class="kbd">↑</span> throttle · <span class="kbd">S</span> <span class="kbd">↓</span> brake, hold to reverse · <span class="kbd">A</span> <span class="kbd">D</span> steer · <span class="kbd">Space</span> handbrake<br>
+      <span class="kbd">C</span> camera · <span class="kbd">R</span> reset car · <span class="kbd">V</span> instant replay · <span class="kbd">T</span> slow motion · <span class="kbd">H</span> horn · <span class="kbd">M</span> mute · <span class="kbd">Esc</span> pause
+      <h4>Gamepad</h4>
+      <b>RT</b> throttle · <b>LT</b> brake · <b>left stick</b> steer · <b>A/B</b> handbrake · <b>Y</b> camera · <b>X</b> reset · <b>Back</b> replay · <b>RB</b> slow-mo · <b>Start</b> pause
+      <h4>Touch</h4>
+      Arrow pads steer, GAS and BRAKE on the right, HB is the handbrake. The round buttons along the top pause, change camera, replay, slow down time and reset the car. In orbit camera, drag the view to look around.
+    </div>
+    <div class="start-wrap"><button class="primary" id="startBtn">Drive</button></div>
+  </section>
+</div>
+
+<!-- heads-up display -->
+<div id="hud" hidden>
+  <div class="panel" id="modePanel"><div id="modeName">Free Roam</div><dl id="modeInfo"></dl></div>
+  <div class="panel" id="damagePanel">
+    <div class="dtitle">Damage</div>
+    <canvas id="dmgMap" width="128" height="216" aria-label="Live damage map"></canvas>
+    <dl>
+      <div><dt>Engine</dt><dd id="dEngine">100%</dd></div>
+      <div><dt>Coolant</dt><dd id="dTemp">90°C</dd></div>
+      <div><dt>Glass</dt><dd id="dGlass">Intact</dd></div>
+      <div><dt>Repair</dt><dd id="dCost">$0</dd></div>
+    </dl>
+  </div>
+  <div id="topbar">
+    <button data-tap="pause" aria-label="Pause"><svg viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></svg></button>
+    <button data-tap="camera" aria-label="Change camera"><svg viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg></button>
+    <button data-tap="replay" aria-label="Instant replay"><svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 1 0 2.5-5.8"/><path d="M4 4v4h4"/><path d="M11 9l4 3-4 3z"/></svg></button>
+    <button data-tap="slowmo" aria-label="Slow motion"><svg viewBox="0 0 24 24"><path d="M7 3h10M7 21h10M8 3c0 5 8 5 8 9s-8 4-8 9M16 3c0 5-8 5-8 9s8 4 8 9"/></svg></button>
+    <button data-tap="reset" aria-label="Reset car"><svg viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L4 17l3 3 5.3-5.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.5-.5-.5-2.5z"/></svg></button>
+  </div>
+  <div id="speedo">
+    <canvas id="tach" width="380" height="380"></canvas>
+    <div class="dial"><div id="spd">0</div><div id="unit">mph</div><div id="gear">1</div></div>
+    <div class="flags"><span class="flag" id="tcFlag">TC</span><span class="flag" id="boostFlag">BOOST</span></div>
+  </div>
+  <div id="keyHint"><span class="kbd">C</span> camera · <span class="kbd">R</span> reset · <span class="kbd">V</span> replay · <span class="kbd">T</span> slow-mo · <span class="kbd">Esc</span> pause</div>
+  <div id="banner"></div>
+  <div id="toast" role="status"></div>
+</div>
+
+<!-- touch controls -->
+<div id="touch" hidden>
+  <button class="t-left" data-hold="left" aria-label="Steer left"><svg viewBox="0 0 24 24"><path d="M15 5 7 12l8 7z"/></svg></button>
+  <button class="t-right" data-hold="right" aria-label="Steer right"><svg viewBox="0 0 24 24"><path d="M9 5l8 7-8 7z"/></svg></button>
+  <button class="t-hb" data-hold="hb">HB</button>
+  <button class="t-brake" data-hold="brake">Brake</button>
+  <button class="t-gas" data-hold="gas">Gas</button>
+</div>
+
+<!-- pause -->
+<div id="pause" class="overlay" hidden>
+  <div class="card">
+    <h2>Paused</h2>
+    <div class="row">
+      <button class="primary" id="resumeBtn">Resume</button>
+    </div>
+    <div class="row">
+      <button class="ghost" id="resetCarBtn">Reset car</button>
+      <button class="ghost" id="restartBtn">Restart</button>
+      <button class="ghost" id="menuBtn">Main menu</button>
+    </div>
+    <div id="teleports"></div>
+  </div>
+</div>
+
+<!-- results -->
+<div id="results" class="overlay" hidden>
+  <div class="card">
+    <h2 id="resTitle">Results</h2>
+    <div class="table-wrap"><table id="resTable"></table></div>
+    <div class="row">
+      <button class="primary" id="resAgain">Go again</button>
+    </div>
+    <div class="row">
+      <button class="ghost" id="resReplay">Watch replay</button>
+      <button class="ghost" id="resMenu">Main menu</button>
+    </div>
+  </div>
+</div>
+
+<div id="replayBar" hidden>
+  <span class="rec">Replay</span>
+  <button class="ghost" id="replaySpeed">×0.5</button>
+  <button class="ghost" id="replayExit">Exit</button>
+</div>
+
+<script>
+  if (matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 1) document.body.classList.add('touch');
+</script>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>

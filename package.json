@@ -1,0 +1,1 @@
+{"name":"crumple-zone","private":true,"type":"module","scripts":{"test":"node tests/sim.mjs"}}
