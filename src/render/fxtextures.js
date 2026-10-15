@@ -15,18 +15,20 @@ function rng(seed) {
   };
 }
 
-// Periodic value noise on a 256-wide lattice: noise(x, y, period) tiles every `period` cells.
+// Periodic value noise on a 256-wide lattice: noise(x, y, period) tiles every
+// `period` cells (period must be a power of two <= 256).
 function makeNoise(seed) {
   const r = rng(seed);
   const L = new Float32Array(256 * 256);
   for (let i = 0; i < L.length; i++) L[i] = r();
-  const fade = (t) => t * t * t * (t * (t * 6 - 15) + 10);
   return (x, y, P = 256) => {
+    const m = P - 1;
     const xi = Math.floor(x), yi = Math.floor(y);
-    const fx = fade(x - xi), fy = fade(y - yi);
-    const x0 = ((xi % P) + P) % P, y0 = ((yi % P) + P) % P;
-    const x1 = (x0 + 1) % P, y1 = (y0 + 1) % P;
-    const a = L[y0 * 256 + x0], b = L[y0 * 256 + x1], c = L[y1 * 256 + x0], d = L[y1 * 256 + x1];
+    let fx = x - xi, fy = y - yi;
+    fx = fx * fx * fx * (fx * (fx * 6 - 15) + 10);
+    fy = fy * fy * fy * (fy * (fy * 6 - 15) + 10);
+    const x0 = xi & m, y0 = yi & m, x1 = (x0 + 1) & m, y1 = (y0 + 1) & m;
+    const a = L[(y0 << 8) + x0], b = L[(y0 << 8) + x1], c = L[(y1 << 8) + x0], d = L[(y1 << 8) + x1];
     return a + (b - a) * fx + (c - a) * fy + (a - b - c + d) * fx * fy;
   };
 }

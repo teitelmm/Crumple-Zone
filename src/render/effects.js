@@ -11,9 +11,9 @@ import { SkidMarks } from './fxskids.js';
 // Budgets per quality tier. 'low' halves the pools and shrinks puffs to keep phone
 // overdraw down; 'high' gets detail noise in the smoke, shadows on debris and more glints.
 const QUALITY = {
-  high: { smoke: 640, glints: 72, sparks: 600, shards: 420, plastic: 160, metal: 90, skids: 4096, size: 1, alpha: 1, detail: true, sparkPerCall: 2, glassPerEvent: 90, glassBurst: 10, glintFly: 2.5, glintRest: 0.04, debrisMul: 0.8, debrisRate: 160, shadows: true, hotspots: 0.3 },
-  medium: { smoke: 480, glints: 48, sparks: 400, shards: 280, plastic: 110, metal: 60, skids: 3072, size: 0.85, alpha: 1.05, detail: true, sparkPerCall: 1, glassPerEvent: 60, glassBurst: 8, glintFly: 1.5, glintRest: 0.02, debrisMul: 0.7, debrisRate: 110, shadows: false, hotspots: 0.2 },
-  low: { smoke: 320, glints: 24, sparks: 200, shards: 140, plastic: 60, metal: 30, skids: 2048, size: 0.65, alpha: 1.2, detail: false, sparkPerCall: 1, glassPerEvent: 30, glassBurst: 5, glintFly: 0.8, glintRest: 0, debrisMul: 0.6, debrisRate: 60, shadows: false, hotspots: 0 },
+  high: { smoke: 640, glints: 72, sparks: 600, shards: 420, plastic: 160, metal: 90, skids: 4096, size: 1, alpha: 1, detail: true, sparkPerCall: 2, glassPerEvent: 90, glassBurst: 10, glintFly: 2.5, glintRest: 0.04, debrisMul: 0.8, debrisRate: 160, shadows: true, hotspots: 0.3, clods: 160, clodRate: 0.35, tex: 128 },
+  medium: { smoke: 480, glints: 48, sparks: 400, shards: 280, plastic: 110, metal: 60, skids: 3072, size: 0.85, alpha: 1.05, detail: true, sparkPerCall: 1, glassPerEvent: 60, glassBurst: 8, glintFly: 1.5, glintRest: 0.02, debrisMul: 0.7, debrisRate: 110, shadows: false, hotspots: 0.2, clods: 100, clodRate: 0.25, tex: 128 },
+  low: { smoke: 320, glints: 24, sparks: 200, shards: 140, plastic: 60, metal: 30, skids: 2048, size: 0.65, alpha: 1.2, detail: false, sparkPerCall: 1, glassPerEvent: 30, glassBurst: 5, glintFly: 0.8, glintRest: 0, debrisMul: 0.6, debrisRate: 60, shadows: false, hotspots: 0, clods: 50, clodRate: 0.15, tex: 64 },
 };
 
 // Particle presets (life range s, start/end radius m, peak opacity, fade-in s,
@@ -43,6 +43,8 @@ const C_WHEEL = linearRGB('#a39c8e');
 const C_GLINT = [7, 7.4, 8];
 const C_HOT = [9, 5, 1.6];
 
+const CLOD_DIRT = [0x5b4633, 0x6b5440, 0x4a3a2a, 0x7a6249];
+const CLOD_GRASS = [0x3d4a22, 0x4b3d2a, 0x56472f, 0x35411d];
 const PLASTIC = [0x1d1e20, 0x242527, 0x2c2d30, 0x34363a, 0x3f4145, 0x18191b];
 const METAL = [0x75797f, 0x8b8f95, 0x9ea2a8, 0x60646a, 0xb3b6ba];
 
@@ -98,7 +100,7 @@ export class Effects {
     this.scene = scene;
     this.quality = quality;
     const Q = this.Q = QUALITY[quality] || QUALITY.high;
-    const puff = makePuffAtlas(), noise = makeNoiseTexture(), glintTex = makeGlintTexture();
+    const puff = makePuffAtlas(Q.tex), noise = makeNoiseTexture(Q.tex), glintTex = makeGlintTexture();
 
     this.smoke = new BillboardPool(scene, { max: Q.smoke, map: puff, detail: Q.detail ? noise : null, lit: true, lift: 0.3, nearFade: [0.3, 2.2], renderOrder: 2 });
     this.glints = new BillboardPool(scene, { max: Q.glints, map: glintTex, additive: true, nearFade: [0.1, 0.4], renderOrder: 4 });
@@ -111,6 +113,9 @@ export class Effects {
     const metalMat = new THREE.MeshStandardMaterial({ color: '#ffffff', metalness: 0.85, roughness: 0.35, flatShading: true });
     this.plastic = new RigidPool(scene, { max: Q.plastic, geometry: chunkGeometry(3), material: plasticMat, colors: true, castShadow: Q.shadows, restLife: 45, bounce: 0.3 });
     this.metal = new RigidPool(scene, { max: Q.metal, geometry: chunkGeometry(11), material: metalMat, colors: true, castShadow: Q.shadows, restLife: 45, bounce: 0.25 });
+    // clods of dirt and turf thrown by tyres sliding off the tarmac
+    const clodMat = new THREE.MeshStandardMaterial({ color: '#ffffff', metalness: 0, roughness: 1, flatShading: true });
+    this.clods = new RigidPool(scene, { max: Q.clods, geometry: chunkGeometry(7), material: clodMat, colors: true, restLife: 9, bounce: 0.12 });
 
     this.skids = new SkidMarks(scene, Q.skids, noise);
     this.loose = [];
@@ -150,6 +155,12 @@ export class Effects {
       this.smoke.emit(x + jx, y + 0.18, z + jz,
         vx * 0.35 + (Math.random() - 0.5) * 1.4, 0.25 + Math.random() * 0.6, vz * 0.35 + (Math.random() - 0.5) * 1.4,
         P_DUST, Q.size * (0.55 + amount * 0.6), Q.alpha * (dirt ? 0.45 + 0.55 * amount : 0.2 + 0.45 * amount), dirt ? C_DIRT : C_GRASS, dirt ? C_DIRT2 : C_GRASS2);
+      if (amount > 0.3 && Math.random() < Q.clodRate * amount) {
+        const sz = rnd(0.025, 0.06), pal = dirt ? CLOD_DIRT : CLOD_GRASS;
+        this.clods.emit(x + jx, y + 0.08, z + jz,
+          vx * 0.45 + (Math.random() - 0.5) * 2.5, 1.2 + Math.random() * 2.8, vz * 0.45 + (Math.random() - 0.5) * 2.5,
+          sz, sz * rnd(0.5, 0.9), sz * rnd(0.6, 1), pal[Math.floor(Math.random() * pal.length)]);
+      }
     } else {
       this.smoke.emit(x + jx, y + 0.2, z + jz,
         vx * 0.3 + (Math.random() - 0.5), 0.4 + Math.random() * 0.6, vz * 0.3 + (Math.random() - 0.5),
@@ -275,6 +286,7 @@ export class Effects {
     this.shards.update(dt, this.glassGlint);
     this.plastic.update(dt, null);
     this.metal.update(dt, null);
+    this.clods.update(dt, null);
     this.glints.update(dt, this.camPos, this.wind);
     for (const w of this.loose) w.update(dt, this);
     this.skids.flush();
@@ -282,7 +294,7 @@ export class Effects {
 
   clear() {
     this.smoke.clear(); this.sparks.clear(); this.glints.clear(); this.skids.clear();
-    this.shards.clear(); this.plastic.clear(); this.metal.clear();
+    this.shards.clear(); this.plastic.clear(); this.metal.clear(); this.clods.clear();
     for (const w of this.loose) w.dispose();
     this.loose = [];
   }

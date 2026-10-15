@@ -240,7 +240,7 @@ export class BillboardPool {
       if (a >= life[i]) { life[i] = 0; keys[i] = 0xffffffff; continue; }
       age[i] = a;
       const i3 = i * 3;
-      const k = 1 - Math.exp(-this.drag[i] * dt);
+      const x = this.drag[i] * dt, k = x / (1 + x); // ~ 1 - exp(-x)
       const wk = this.windK[i];
       // gentle swirl so plumes do not move as rigid sheets
       const tb = this.turb[i], ph = this.frame[i] * 7.1 + a * 1.3;
@@ -267,15 +267,16 @@ export class BillboardPool {
       const i = this.sorted ? key & 0xffff : key;
       const i3 = i * 3;
       const t = age[i] / life[i];
-      const e = 1 - (1 - t) * (1 - t);
+      const e = 1 - (1 - t) * (1 - t); // ease-out growth
       const r = this.r0[i] + (this.r1[i] - this.r0[i]) * e;
       // stay above the ground; the ground has no depth so a sunk puff would just look flat
       if (p[i3 + 1] < r * 0.3) { p[i3 + 1] = r * 0.3; if (v[i3 + 1] < 0) v[i3 + 1] = 0; }
       const fi = Math.min(1, age[i] / this.fadeIn[i]);
-      const alpha = this.a0[i] * fi * fi * (3 - 2 * fi) * Math.pow(1 - t, 1.3);
+      const u = 1 - t;
+      const alpha = this.a0[i] * fi * fi * (3 - 2 * fi) * u * Math.sqrt(u);
       const o4 = j * 4, o3 = j * 3;
       PS[o4] = p[i3]; PS[o4 + 1] = p[i3 + 1]; PS[o4 + 2] = p[i3 + 2]; PS[o4 + 3] = r;
-      PR[o4] = this.rot[i]; PR[o4 + 1] = alpha; PR[o4 + 2] = this.frame[i]; PR[o4 + 3] = this.erode[i] * Math.pow(t, 1.4);
+      PR[o4] = this.rot[i]; PR[o4 + 1] = alpha; PR[o4 + 2] = this.frame[i]; PR[o4 + 3] = this.erode[i] * t * Math.sqrt(t);
       const c1 = this.col, c2 = this.col2;
       CO[o3] = c1[i3] + (c2[i3] - c1[i3]) * t;
       CO[o3 + 1] = c1[i3 + 1] + (c2[i3 + 1] - c1[i3 + 1]) * t;

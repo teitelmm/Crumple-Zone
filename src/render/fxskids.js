@@ -178,7 +178,7 @@ export class SkidMarks {
   clear() {
     this.pos.fill(0); this.mark.fill(0); this.kind.fill(0);
     for (const attr of [this.aPos, this.aMark, this.aKind]) { attr.clearUpdateRanges(); attr.needsUpdate = true; }
-    for (const r of this.recs) if (r) r.on = false;
+    for (const r of this.recs) if (r) { r.on = false; r.kind = 0; }
     this.cursor = 0; this.used = 0; this.lo = this.max; this.hi = -1;
     this.geo.setDrawRange(0, 0);
     this.mesh.visible = false;
