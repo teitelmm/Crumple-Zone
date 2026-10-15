@@ -88,7 +88,7 @@ void main() {
          + czBright( texture2D( tDiffuse, vUv + uTexel * vec2( 0.5, -0.5 ) ).rgb )
          + czBright( texture2D( tDiffuse, vUv + uTexel * vec2( -0.5, 0.5 ) ).rgb )
          + czBright( texture2D( tDiffuse, vUv + uTexel * vec2( 0.5, 0.5 ) ).rgb );
-  gl_FragColor = vec4( min( c * 0.25, vec3( 60.0 ) ), 1.0 );
+  gl_FragColor = vec4( min( c * 0.25, vec3( 150.0 ) ), 1.0 );
 }`;
 
 const QUAD_VERT = /* glsl */`
@@ -113,8 +113,9 @@ class BloomPass extends UnrealBloomPass {
   get texture() { return this.renderTargetsHorizontal[0].texture; }
 
   setSize(width, height) {
-    if (this.brightMaterial) this.brightMaterial.uniforms.uTexel.value.set(1 / width, 1 / height);
     const d = this.downscale || 1;
+    // 4 bilinear taps spaced to box-filter every source pixel under a bright-pass texel
+    if (this.brightMaterial) this.brightMaterial.uniforms.uTexel.value.set(d / width, d / height);
     super.setSize(Math.max(2, Math.round(width / d)), Math.max(2, Math.round(height / d)));
   }
 
@@ -215,7 +216,7 @@ class FinalPass extends Pass {
         uAO: { value: 0 },
         uNearFar: { value: new THREE.Vector2(0.25, 3000) },
         uExposure: { value: exposure },
-        uVignette: { value: 0.22 },
+        uVignette: { value: 0.18 },
         uAspect: { value: 16 / 9 },
       },
       vertexShader: QUAD_VERT, fragmentShader: FINAL_FRAG,
@@ -261,6 +262,8 @@ class ContactAOPass extends GTAOPass {
   overrideVisibility() { this.scene.traverse(this._hide); }
   restoreVisibility() { this.scene.traverse(this._restore); this._visibilityCache.clear(); }
 }
+
+const AO_FAR = 150;
 
 const BLOOM = {
   high: { strength: 0.32, radius: 0.55, threshold: 3.2, downscale: 1 },
@@ -315,7 +318,9 @@ export class PostFX {
     if (this.ao || !this.useAO) return;
     try {
       const w = Math.max(1, this.size.x >> 1), h = Math.max(1, this.size.y >> 1);
-      this.ao = new ContactAOPass(this.scene, camera, w, h, undefined,
+      this.aoCamera = new THREE.PerspectiveCamera();
+      this.syncAOCamera(camera);
+      this.ao = new ContactAOPass(this.scene, this.aoCamera, w, h, undefined,
         { radius: 1.0, distanceExponent: 1.6, thickness: 1.2, distanceFallOff: 1.0, scale: 1.4, samples: 12 },
         { lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 5, rings: 2, samples: 12 });
       this.ao.output = GTAOPass.OUTPUT.Off;
@@ -323,7 +328,25 @@ export class PostFX {
     } catch (err) {
       console.warn('ambient occlusion disabled:', err);
       this.useAO = false;
+      this.ao = null;
     }
+  }
+
+  // The AO pre-pass only needs the near field (AO fades out by 80 m): same view
+  // and projection (including any setViewOffset), far plane pulled in to 150 m
+  // so distant scenery is culled and depth precision goes where it is used.
+  syncAOCamera(camera) {
+    const c = this.aoCamera;
+    camera.updateMatrixWorld();
+    camera.matrixWorld.decompose(c.position, c.quaternion, c.scale);
+    c.updateMatrixWorld();
+    const n = camera.near, f = Math.min(camera.far, AO_FAR);
+    c.near = n; c.far = f;
+    c.projectionMatrix.copy(camera.projectionMatrix);
+    const e = c.projectionMatrix.elements;
+    e[10] = -(f + n) / (f - n);
+    e[14] = -2 * f * n / (f - n);
+    c.projectionMatrixInverse.copy(c.projectionMatrix).invert();
   }
 
   render(camera) {
@@ -332,7 +355,7 @@ export class PostFX {
     const sm = this.renderer.shadowMap;
     const autoUpdate = sm.autoUpdate;
     if (this.ao) {
-      this.ao.camera = camera;
+      this.syncAOCamera(camera);
       this.ao.render(this.renderer, null, null);
       // the AO normal pass already refreshed the shadow map this frame
       sm.autoUpdate = false;

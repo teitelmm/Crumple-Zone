@@ -108,10 +108,13 @@ const vec3 CZ_K = ${v3(K)};
 const vec3 CZ_EXT0 = ${v3(EXT0)};
 const float CZ_G = ${MIE_G.toFixed(4)};
 const float CZ_MULTI = ${MULTI.toFixed(4)};
+const vec3 CZ_WR = CZ_K * CZ_TAU_R / ( CZ_TAU_R + CZ_TAU_M );
+const vec3 CZ_WM = CZ_K * CZ_TAU_M / ( CZ_TAU_R + CZ_TAU_M );
 vec3 czScatter( float nu, vec3 ext ) {
-  float pr = 0.75 * ( 1.0 + nu * nu );
-  float pm = ( 1.0 - CZ_G * CZ_G ) / pow( 1.0 + CZ_G * CZ_G - 2.0 * CZ_G * nu, 1.5 );
-  return CZ_K * ( ( CZ_TAU_R * ( pr + CZ_MULTI ) + CZ_TAU_M * pm ) / ( CZ_TAU_R + CZ_TAU_M ) ) * ext;
+  float pr = 0.75 * ( 1.0 + nu * nu ) + CZ_MULTI;
+  float x = 1.0 + CZ_G * CZ_G - 2.0 * CZ_G * nu;
+  float pm = ( 1.0 - CZ_G * CZ_G ) / ( x * sqrt( x ) );
+  return ( CZ_WR * pr + CZ_WM * pm ) * ext;
 }
 vec3 czHaze( vec3 d ) {
   vec2 h = d.xz;
@@ -255,7 +258,7 @@ void main() {
   // reflection environment: lit ground below, a distant hazy tree line on the horizon, no sun disc
   if ( d.y < 0.0 ) {
     float t = 1.3 / max( -d.y, 1e-4 );
-    float f = 1.0 - exp( -3.0 * pow( t / 2000.0, 1.8 ) );
+    float f = 1.0 - exp( -3.0 * pow( t / 2200.0, 2.2 ) );
     col = mix( CZ_GROUND, col, f );
   } else {
     float az = atan( d.z, d.x );
@@ -272,7 +275,7 @@ void main() {
   float cosA = dot( d, CZ_SUN );
   float disc = smoothstep( 0.99994, 0.999975, cosA );
   float limb = 1.0 - 0.45 * ( 1.0 - smoothstep( 0.99994, 0.99999, cosA ) );
-  col += vec3( 1.0, 0.97, 0.92 ) * 160.0 * disc * limb * ( 1.0 - c.a );
+  col += vec3( 1.0, 0.97, 0.92 ) * 400.0 * disc * limb * ( 1.0 - c.a );
 #endif
   gl_FragColor = vec4( col, 1.0 );
   #include <tonemapping_fragment>

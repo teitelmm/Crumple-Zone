@@ -36,7 +36,7 @@ ${ATMOSPHERE_GLSL}
 		float fogFactor = 1.0 - exp( - fogDensity * fogDensity * fogDist * fogDist );
 	#else
 		float fogT = max( fogDist - fogNear, 0.0 ) / max( fogFar - fogNear, 1.0 );
-		float fogFactor = 1.0 - exp( -3.0 * pow( fogT, 1.8 ) );
+		float fogFactor = 1.0 - exp( -3.0 * pow( fogT, 2.2 ) );
 	#endif
 	vec3 fogDirW = ( vec4( vFogPos, 0.0 ) * viewMatrix ).xyz;
 	vec3 fogCol = czHaze( fogDirW ) * ( fogColor / CZ_FOG_REF );
@@ -61,8 +61,8 @@ ${ATMOSPHERE_GLSL}
 }
 
 const SHADOW = {
-  high: { map: 4096, half: 62, normalBias: 0.022, bias: -0.00006 },
-  medium: { map: 2048, half: 42, normalBias: 0.03, bias: -0.00008 },
+  high: { map: 4096, half: 75, normalBias: 0.025, bias: -0.00006 },
+  medium: { map: 2048, half: 45, normalBias: 0.032, bias: -0.00008 },
 };
 
 export class SunRig {

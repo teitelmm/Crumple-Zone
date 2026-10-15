@@ -55,8 +55,8 @@ export class WorldView {
     this.skyIrradiance = SKY_IRRADIANCE.clone();
     this.exposure = EXPOSURE;
 
-    // aerial perspective: clear to ~50 m, ~95% horizon haze by 2 km (see lighting.js)
-    scene.fog = new THREE.Fog(HORIZON_COLOR.clone(), 50, 2000);
+    // aerial perspective: clear near by, ~40% haze at 1 km, ~95% by 2.2 km (see lighting.js)
+    scene.fog = new THREE.Fog(HORIZON_COLOR.clone(), 50, 2200);
     this.horizonColor = scene.fog.color;
 
     this.skyDome = new SkyDome(scene, quality);
