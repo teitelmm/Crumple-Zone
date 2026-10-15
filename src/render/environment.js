@@ -30,6 +30,7 @@ export class Environment {
     this.shadeRects = [];
     this.paintBatch = new Batch();
     this.decalBatch = new Batch();
+    this.markBatch = new Batch();
     this.fenceBatch = new Batch();
     this.buildMaterials();
 
@@ -109,20 +110,19 @@ export class Environment {
     }
     M.paint = new THREE.MeshStandardMaterial({ map: T.paint, vertexColors: true, transparent: true, depthWrite: false, roughness: 0.55 });
     M.decal = new THREE.MeshStandardMaterial({ map: T.decals, vertexColors: true, transparent: true, depthWrite: false, roughness: 0.6 });
+    M.marks = new THREE.MeshStandardMaterial({ color: '#000000', map: T.paint, transparent: true, opacity: 0.3, depthWrite: false, roughness: 0.75 });
     M.fence = new THREE.MeshStandardMaterial({ map: T.fence, transparent: true, depthWrite: false, side: THREE.DoubleSide, roughness: 0.5, metalness: 0.5 });
 
     // ground layers
     const noise = T.noise;
     this.padMat = groundMaterial({ map: T.asphalt, normalMap: hi ? T.asphaltN : null, normalScale: new THREE.Vector2(0.8, 0.8), roughness: hi ? 1 : 0.86 }, {
       noise, macro: { amp: 0.13, s1: 41, s2: 173 }, detail: this.q === 'high' ? { scale: 0.29, mix: 0.5 } : null,
-      patches: { scale: 34, thresh: 0.7, dark: 0.18, rough: 1.06 }, cracks: hi ? { scale: 11, width: 0.0018, dark: 0.4, mask: 0.62 } : null, roughA: hi,
+      patches: { scale: 34, thresh: 0.745, dark: 0.16, rough: 1.06 }, cracks: hi ? { scale: 11, width: 0.0018, dark: 0.4, mask: 0.62 } : null, roughA: hi,
     }, 1);
     this.labMat = groundMaterial({ map: T.concrete, normalMap: hi ? T.concreteN : null, roughness: hi ? 1 : 0.82 }, {
       noise, macro: { amp: 0.1, s1: 29, s2: 151 }, patches: { scale: 26, thresh: 0.74, dark: 0.22, rough: 0.75 }, roughA: hi,
     }, 1);
   }
-
-  groundMat(kind) { return kind === 'pit' ? this.padMat : this.padMat; }
 
   // Ground layers (grass, pads, road, kerbs, lines) are drawn first, in order, without
   // writing depth, so they can never z-fight however coarse the device's depth buffer is.
@@ -248,10 +248,10 @@ export class Environment {
     batch.add(g, null, color, uvs ? null : boxUV(this.T.tile.paint));
   }
 
-  paintLine(x0, z0, x1, z1, w, color, dash = 0, gap = 0) {
+  paintLine(x0, z0, x1, z1, w, color, dash = 0, gap = 0, batch = this.paintBatch) {
     const L = Math.hypot(x1 - x0, z1 - z0);
     const dx = (x1 - x0) / L, dz = (z1 - z0) / L, nx = -dz * w / 2, nz = dx * w / 2;
-    const seg = (a, b) => this.quad(this.paintBatch, [[x0 + dx * a - nx, z0 + dz * a - nz], [x0 + dx * b - nx, z0 + dz * b - nz], [x0 + dx * b + nx, z0 + dz * b + nz], [x0 + dx * a + nx, z0 + dz * a + nz]], color);
+    const seg = (a, b) => this.quad(batch, [[x0 + dx * a - nx, z0 + dz * a - nz], [x0 + dx * b - nx, z0 + dz * b - nz], [x0 + dx * b + nx, z0 + dz * b + nz], [x0 + dx * a + nx, z0 + dz * a + nz]], color);
     if (!dash) seg(0, L);
     else for (let s = 0; s < L; s += dash + gap) seg(s, Math.min(L, s + dash));
   }
@@ -269,13 +269,25 @@ export class Environment {
     }
   }
 
-  paintArc(cx, cz, r, w, a0, a1, color) {
+  paintArc(cx, cz, r, w, a0, a1, color, batch = this.paintBatch, wobble = null) {
     const n = Math.max(8, Math.ceil(Math.abs(a1 - a0) * r / 1.2));
     for (let k = 0; k < n; k++) {
       const t0 = a0 + (a1 - a0) * k / n, t1 = a0 + (a1 - a0) * (k + 1) / n;
+      const rr0 = r + (wobble ? wobble(t0) : 0), rr1 = r + (wobble ? wobble(t1) : 0);
       const p = (t, rr) => [cx + Math.cos(t) * rr, cz + Math.sin(t) * rr];
-      this.quad(this.paintBatch, [p(t0, r - w / 2), p(t1, r - w / 2), p(t1, r + w / 2), p(t0, r + w / 2)], color);
+      this.quad(batch, [p(t0, rr0 - w / 2), p(t1, rr1 - w / 2), p(t1, rr1 + w / 2), p(t0, rr0 + w / 2)], color);
     }
+  }
+
+  // dark rubber left by tyres: a pair of wheel tracks along a line or an arc
+  rubberLine(x0, z0, x1, z1, track = 1.6, w = 0.22) {
+    const L = Math.hypot(x1 - x0, z1 - z0), nx = -(z1 - z0) / L * track / 2, nz = (x1 - x0) / L * track / 2;
+    for (const s of [-1, 1]) this.paintLine(x0 + nx * s, z0 + nz * s, x1 + nx * s, z1 + nz * s, w, 0xffffff, 0, 0, this.markBatch);
+  }
+
+  rubberArc(cx, cz, r, a0, a1, seed, track = 1.6, w = 0.22) {
+    const ph = seed * 2.7, amp = 0.4 + (seed % 3) * 0.3;
+    for (const s of [-1, 1]) this.paintArc(cx, cz, r + s * track / 2, w, a0, a1, 0xffffff, this.markBatch, (t) => Math.sin(t * 3 + ph) * amp);
   }
 
   // decal from the atlas: w along the reader's right, l along heading (text up)
@@ -303,6 +315,7 @@ export class Environment {
       m.receiveShadow = true;
       this.scene.add(m);
     };
+    add(this.markBatch, this.M.marks, 4.8);
     add(this.paintBatch, this.M.paint, 5);
     add(this.decalBatch, this.M.decal, 5.5);
     if (!this.fenceBatch.empty) this.scene.add(new THREE.Mesh(this.fenceBatch.build(false), this.M.fence));

@@ -187,9 +187,6 @@ export function trs(x, y, z, yaw = 0, sx = 1, sy = sx, sz = sx) {
   return new THREE.Matrix4().compose(_p.set(x, y, z), _q.setFromAxisAngle(_up, yaw), _s.set(sx, sy, sz));
 }
 
-// Game heading (local +x forward -> (cos h, 0, sin h)) as a three.js yaw.
-export const yawOf = (heading) => -heading;
-
 // Lathe helper: profile [[radius, y], ...] around +y
 export function lathe(profile, segments) {
   return new THREE.LatheGeometry(profile.map(([r, y]) => new THREE.Vector2(r, y)), segments);

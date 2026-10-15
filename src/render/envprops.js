@@ -146,7 +146,7 @@ export function buildPits(env, kit) {
     g.setIndex([0, 2, 1, 0, 3, 2]);
     lane.add(g, null, null, uvW);
   }
-  env.addGround(new THREE.Mesh(lane.build(false), env.groundMat('pit')));
+  env.addGround(new THREE.Mesh(lane.build(false), env.padMat));
   // pit lane paint: fast-lane line, garage boxes, entry text
   env.paintLine(-104, (Z0 + Z1) / 2 - 1.2, 92, (Z0 + Z1) / 2 - 1.2, 0.15, 0xe9e9e4);
   env.paintLine(-104, Z1 - 0.3, 92, Z1 - 0.3, 0.12, 0xe8b400);
@@ -331,6 +331,20 @@ export function buildInfield(env, kit, cones) {
     const a = k / 16 * Math.PI * 2;
     cones.push([sp[0] + Math.cos(a) * 30.5, sp[1] + Math.sin(a) * 30.5]);
   }
+  // rubber: circles on the skid pad, donuts, braking streaks
+  for (let k = 0; k < 7; k++) {
+    const a0 = k * 1.9, len = 2.5 + (k % 3) * 1.4;
+    env.rubberArc(sp[0], sp[1], 24 + (k % 4) * 2.4, a0, a0 + len, k);
+  }
+  for (let k = 0; k < 4; k++) env.rubberArc(sp[0], sp[1], 10 + k * 1.2, k, k + 4.5, k + 3);
+  for (const [dx, dz] of [[-48, -22], [-41, -18]]) env.rubberArc(dx, dz, 4.5, 0, Math.PI * 2, 5, 1.5);
+  for (const zz of [-148, -144, -140]) env.rubberLine(38 + (zz % 3), zz, 64, zz, 1.55);
+  for (const c of env.world.colliders) {
+    if (!c.ramp) continue;
+    const r = c.ramp, fx = Math.cos(r.heading), fz = Math.sin(r.heading);
+    const lx = r.x + fx * (r.run + 9), lz = r.z + fz * (r.run + 9);
+    env.rubberLine(lx, lz, lx + fx * 14, lz + fz * 14, 1.6);
+  }
   // braking lanes along the south edge with distance boards
   const lz = [-150, -146, -142, -138];
   for (const zz of lz) env.paintLine(-125, zz, 62, zz, 0.15, W);
@@ -411,6 +425,7 @@ export function buildLabProps(env, kit, cones) {
   // lane markings
   for (const s of [-1, 1]) env.paintLine(lab.x - lab.w / 2 + 2, z0 + s * 3.2, lab.x + lab.w / 2 - 2, z0 + s * 3.2, 0.15, Y, 3, 2);
   for (const s of [-1, 1]) env.paintLine(lab.x - lab.w / 2 + 2, z0 + s * (lab.l / 2 - 2), lab.x + lab.w / 2 - 2, z0 + s * (lab.l / 2 - 2), 0.2, W);
+  env.rubberLine(x0 - 60, z0, x0 - 2, z0, 1.6, 0.18);
   // calibration grid ahead of the barrier and distance marks on the run-up
   env.decal('calib', x0 - 5, z0, 8, 4, Math.PI / 2, 0xffffff);
   for (let k = 1; k <= 6; k++) {

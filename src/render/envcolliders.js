@@ -66,12 +66,11 @@ export class ColliderViews {
     this.items = new Map(); // id -> { hide() }
     const q = env.q;
     this.hiQ = q !== 'low';
-    const T = env.T, M = env.M;
+    const M = env.M;
     this.ringGeo = tyreRing(q === 'high' ? 9 : 7);
     this.stackGeo = tyreStack(4, q === 'high' ? 9 : 7);
     this.mats = { wall: M.wall, belt: M.belt, rubber: M.rubber, hazard: M.hazard, steel: M.steel, lamp: M.lamp, honey: M.honeycomb, deck: M.deck, paint: M.paintVC };
     this.buildStatic(env.world.colliders);
-    void T;
   }
 
   // ---------------------------------------------------------------- static
@@ -134,7 +133,7 @@ export class ColliderViews {
         if (Math.hypot(c.cx - d.x, c.cz - d.z) < d.r + 6) return this.derbyWall(c, M, addPart, inst, isStatic);
         return this.crashWall(c, M, addPart);
       }
-      addPart(c.id, 'wall', meterBox(c.hx * 2, c.hy * 2, c.hz * 2, 4, 0, 4).translate(0, 0, 0), M);
+      addPart(c.id, 'wall', meterBox(c.hx * 2, c.hy * 2, c.hz * 2, 4, 0, 4), M);
       return;
     }
     if (c.type === 'cyl') {
