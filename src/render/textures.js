@@ -285,40 +285,42 @@ function grassMaps(S, aniso) {
   return dtex(packRGB(col, S, S), S, S, aniso, true);
 }
 
+// Dense aggregate set in a dark binder: every pixel belongs to a stone (Worley
+// cell, ~12 mm at 1024 px / 4 m) with its own grey; the binder shows in the
+// gaps and where the surface is less worn. Cracks are left to the shader, in
+// world space, so they never repeat with the tile.
 function asphaltMaps(S, aniso, seed, base) {
   const r = rng(seed);
   const N = S * S;
   const mid = field(S, 'lo', 1);
   const fine = field(S, 'hi', 1);
+  const W = worley(S, Math.round(S / 4.6), r);
+  // per-stone tone and hue (most mid / dark grey, a few light quartz, some brownish)
+  const tone = new Float32Array(1024), hue = new Float32Array(1024);
+  for (let k = 0; k < 1024; k++) {
+    const u = r();
+    tone[k] = u < 0.06 ? 1.5 + r() * 0.25 : 0.72 + Math.pow(r(), 1.4) * 0.55;
+    hue[k] = r() < 0.2 ? 0.04 + r() * 0.03 : (r() - 0.5) * 0.02;
+  }
   const col = new Float32Array(N * 3), H = new Float32Array(N), R = new Float32Array(N);
   for (let i = 0; i < N; i++) {
-    const v = base * (0.9 + 0.2 * mid[i]) + (fine[i] - 0.5) * 0.07 + (r() - 0.5) * 0.06;
-    col[i * 3] = v; col[i * 3 + 1] = v; col[i * 3 + 2] = v * 1.03;
-    H[i] = fine[i] * 0.35 + r() * 0.15;
-    R[i] = 0.86 + r() * 0.1;
-  }
-  // exposed aggregate
-  const stones = Math.floor(N * 0.05);
-  for (let k = 0; k < stones; k++) {
-    const x = (r() * S) | 0, y = (r() * S) | 0;
-    const sz = r() < 0.8 ? 1 : 2;
-    const b = base * 1.25 + r() * 0.26, w = (r() - 0.5) * 0.05;
-    const hh = 0.65 + r() * 0.35, rr = 0.5 + r() * 0.22;
-    for (let dy = 0; dy < sz; dy++) for (let dx = 0; dx < sz + (r() < 0.4 ? 1 : 0); dx++) {
-      const i = ((y + dy) & (S - 1)) * S + ((x + dx) & (S - 1));
-      col[i * 3] = b + w; col[i * 3 + 1] = b; col[i * 3 + 2] = b - w * 0.6;
-      H[i] = hh; R[i] = rr;
-    }
+    const s = (W.id[i] * 1023) | 0;
+    const gap = smooth(0.2, 1.4, W.f2[i] - W.f1[i]);
+    const dome = clamp01(1 - W.f1[i] / (W.cs * 0.85));
+    // worn surface: aggregate tops exposed; fresher areas keep more binder
+    const wear = 0.55 + 0.45 * smooth(0.25, 0.75, mid[i]);
+    const ex = gap * (0.35 + 0.65 * dome) * wear;
+    const v = base * 1.32 * (0.62 + (tone[s] - 0.62) * ex) * (0.94 + 0.12 * mid[i]) + (fine[i] - 0.5) * 0.03 + (r() - 0.5) * 0.035;
+    const h = hue[s] * ex;
+    col[i * 3] = v * (1.02 + h); col[i * 3 + 1] = v * (1.0 + h * 0.3); col[i * 3 + 2] = v * (0.93 - h);
+    H[i] = ex * 0.8 + fine[i] * 0.15;
+    R[i] = 0.93 - ex * 0.16 + (r() - 0.5) * 0.04;
   }
   // pores (dark voids between stones)
-  for (let k = 0, n = N * 0.02; k < n; k++) {
+  for (let k = 0, n = N * 0.012; k < n; k++) {
     const i = ((r() * S) | 0) * S + ((r() * S) | 0);
-    col[i * 3] *= 0.55; col[i * 3 + 1] *= 0.55; col[i * 3 + 2] *= 0.55; H[i] = 0;
+    col[i * 3] *= 0.6; col[i * 3 + 1] *= 0.6; col[i * 3 + 2] *= 0.6; H[i] = 0;
   }
-  // a few hairline cracks
-  for (let c = 0; c < 3; c++) crackWalk(S, S, r, S * 0.35, (i) => {
-    col[i * 3] *= 0.5; col[i * 3 + 1] *= 0.5; col[i * 3 + 2] *= 0.5; H[i] = -0.4; R[i] = 0.96;
-  });
   return {
     map: dtex(packRGB(col, S, S), S, S, aniso, true),
     normal: nmap(H, S, S, 1.1, R, aniso),
@@ -344,13 +346,13 @@ function concreteMaps(S, aniso, slabs) {
     const lx = x - sx * slab, ly = y - sy * slab;
     const d = Math.min(lx, slab - 1 - lx, ly, slab - 1 - ly);
     const broom = (dir[sId] ? streakX[x] : streakY[y]) - 0.5;
-    let v = 0.62 * tone[sId] * (0.92 + 0.14 * mid[i]) + (fine[i] - 0.5) * 0.06 + broom * 0.035 + (r() - 0.5) * 0.04;
+    let v = 0.575 * tone[sId] * (0.92 + 0.14 * mid[i]) + (fine[i] - 0.5) * 0.06 + broom * 0.035 + (r() - 0.5) * 0.04;
     let h = 0.5 + fine[i] * 0.2 + broom * 0.15 + r() * 0.05;
     let rough = 0.8 + fine[i] * 0.12;
     if (d < jw) { v *= 0.35; h = -0.6; rough = 0.95; }
     else if (d < jw * 3.5) { v *= 0.86; h = 0.3; rough = 0.72; } // sealant / trowelled edge
     else if (d < jw * 7) { h += 0.05; rough = 0.74; }
-    col[i * 3] = v * 1.01; col[i * 3 + 1] = v; col[i * 3 + 2] = v * 0.96;
+    col[i * 3] = v * 1.035; col[i * 3 + 1] = v; col[i * 3 + 2] = v * 0.92;
     H[i] = h; R[i] = rough;
   }
   // bug holes and chips
@@ -520,8 +522,8 @@ function wallMaps(aniso) {
     // ground splash
     v *= 1 - smooth(0.45, 0.0, hgt) * 0.25;
     // rubber scuffs where bumpers and tyres hit
-    const sc = smooth(0.68, 0.85, scuffN[((y * 6) & (S - 1)) * S + x]) * smooth(0.12, 0.25, hgt) * smooth(0.8, 0.5, hgt);
-    v *= 1 - sc * 0.7;
+    const sc = smooth(0.6, 0.95, scuffN[((y * 6) & (S - 1)) * S + x]) * smooth(0.1, 0.3, hgt) * smooth(0.85, 0.45, hgt);
+    v *= 1 - sc * 0.38;
     col[i * 3] = v * 1.01; col[i * 3 + 1] = v; col[i * 3 + 2] = v * 0.97;
     H[i] = h; R[i] = 0.82 + fine[i] * 0.12;
   }

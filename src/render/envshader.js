@@ -10,6 +10,7 @@
 //   roughA  roughness read from the normal map's alpha channel
 //   grass   verge mask / mowing stripes / tree shade from a world map texture
 //   track   painted edge lines, rubbered racing line and braking streaks (aTrack attribute)
+//   canopy  forest canopy (crowns from noise) and bare rock on terrain (aEnv attribute)
 //   haze    scene fog with a cap, so distant terrain keeps a silhouette
 import * as THREE from 'three';
 
@@ -18,6 +19,10 @@ varying vec3 vEnvWorld;
 #ifdef ENV_TRACK
 attribute vec4 aTrack;
 varying vec4 vTrack;
+#endif
+#ifdef ENV_CANOPY
+attribute vec2 aEnv;
+varying vec2 vEnvT;
 #endif
 `;
 
@@ -30,6 +35,9 @@ const VERT_BODY = /* glsl */`
   vEnvWorld = ( modelMatrix * envW ).xyz;
   #ifdef ENV_TRACK
   vTrack = aTrack;
+  #endif
+  #ifdef ENV_CANOPY
+  vEnvT = aEnv;
   #endif
 }
 `;
@@ -49,6 +57,9 @@ uniform vec4 uTrackP;   // half width, line sigma, rubber strength, edge dust
 uniform vec3 uHaze;     // distance scale far out, max factor, altitude fade
 #ifdef ENV_TRACK
 varying vec4 vTrack;
+#endif
+#ifdef ENV_CANOPY
+varying vec2 vEnvT;
 #endif
 `;
 
@@ -103,7 +114,10 @@ float envPaint = 0.0;
   #endif
   #ifdef ENV_GRASS
   {
-    vec4 wm = texture2D( uWorldMap, ( envP - uWorldXf.xy ) * uWorldXf.z );
+    vec2 wuv = ( envP - uWorldXf.xy ) * uWorldXf.z;
+    vec4 wm = texture2D( uWorldMap, wuv );
+    // outside the map (terrain beyond the boundary) the clamped edge texels would smear
+    wm = mix( vec4( 1.0, 0.0, 0.0, 1.0 ), wm, step( max( abs( wuv.x - 0.5 ), abs( wuv.y - 0.5 ) ), 0.499 ) );
     float dist = wm.r * 64.0;
     float verge = 1.0 - smoothstep( 22.0, 48.0, dist );
     float sp = dist / uWorldXf.w;
@@ -111,10 +125,39 @@ float envPaint = 0.0;
     float tri = abs( fract( sp ) - 0.5 ) * 2.0;
     float stripe = smoothstep( 0.5 - sw, 0.5 + sw, tri ) - 0.5;
     stripe *= 1.0 - smoothstep( 0.2, 0.45, sw );
-    diffuseColor.rgb *= 1.0 + verge * stripe * 0.1;
+    // mowing stripes: blades laid toward / away from the viewer
+    diffuseColor.rgb *= 1.0 + verge * stripe * vec3( 0.26, 0.22, 0.16 );
     diffuseColor.rgb *= mix( vec3( 1.0 ), vec3( 0.93, 1.04, 0.9 ), verge );
+    #ifdef ENV_MACRO
+    {
+      // open fields away from the circuit: wobbly mower rows (~6 m passes)
+      // and patchy growth, so big lawns are not one flat green
+      float field = smoothstep( 28.0, 56.0, dist );
+      float rp = envP.x * 0.081 + envN2.g * 0.8;
+      float rw = fwidth( rp ) * 1.5;
+      float row = ( smoothstep( 0.5 - rw, 0.5 + rw, abs( fract( rp ) - 0.5 ) * 2.0 ) - 0.5 ) * ( 1.0 - smoothstep( 0.25, 0.6, rw ) );
+      diffuseColor.rgb *= 1.0 + field * row * vec3( 0.26, 0.22, 0.15 );
+      float patchy = smoothstep( 0.35, 0.8, envN2.b ) * field;
+      diffuseColor.rgb *= mix( vec3( 1.0 ), vec3( 1.16, 1.03, 0.72 ), patchy * 0.85 );
+    }
+    #endif
     diffuseColor.rgb *= 1.0 - wm.g * 0.45;
     diffuseColor.rgb = mix( diffuseColor.rgb, diffuseColor.rgb * vec3( 1.25, 1.08, 0.78 ), wm.b * 0.8 );
+  }
+  #endif
+  #ifdef ENV_CANOPY
+  {
+    // forest seen from afar: dark crowns with lit tops and shaded gaps; conifer
+    // stands darker and bluer than broadleaf ones
+    vec4 cn = texture2D( uEnvNoise, envP * 0.0041 );
+    float cn2 = texture2D( uEnvNoise, envP * 0.0113 + vec2( 0.37, 0.61 ) ).a;
+    float crowns = smoothstep( 0.22, 0.78, cn.a * 0.6 + cn2 * 0.4 );
+    vec3 forest = mix( vec3( 0.030, 0.046, 0.024 ), vec3( 0.062, 0.082, 0.030 ), smoothstep( 0.35, 0.65, cn.g ) );
+    forest *= 0.5 + 0.85 * crowns;
+    diffuseColor.rgb = mix( diffuseColor.rgb, forest, vEnvT.x );
+    vec3 rock = vec3( 0.17, 0.16, 0.145 ) * ( 0.65 + 0.7 * cn.b ) * ( 0.85 + 0.3 * crowns );
+    diffuseColor.rgb = mix( diffuseColor.rgb, rock, vEnvT.y );
+    envRough = 1.0;
   }
   #endif
   #ifdef ENV_TRACK
@@ -148,11 +191,14 @@ roughnessFactor = mix( roughnessFactor * envRough, 0.5, envPaint );
 `;
 
 // Scene fog, but the fog distance shrinks with distance from the world centre
-// (1 at the boundary, uHaze.x on the horizon) and is capped, so far ridges keep
-// a silhouette while matching the regular fog where the terrain meets the grass.
+// (1 at the boundary, uHaze.x from the near hills on) and is capped, so hills
+// and far ridges keep their shape while matching the regular fog where the
+// terrain meets the grass. Far out the haze leans a little bluer than the fog
+// colour (aerial perspective against the sky above the horizon).
 const FRAG_FOG = /* glsl */`
 #ifdef USE_FOG
-  float envHs = mix( 1.0, uHaze.x, smoothstep( 780.0, 1700.0, length( vEnvWorld.xz ) ) );
+  float envFar = smoothstep( 760.0, 1300.0, length( vEnvWorld.xz ) );
+  float envHs = mix( 1.0, uHaze.x, envFar );
   #ifdef FOG_EXP2
     float envFd = vFogDepth * envHs;
     float fogFactor = 1.0 - exp( - fogDensity * fogDensity * envFd * envFd );
@@ -160,11 +206,11 @@ const FRAG_FOG = /* glsl */`
     float fogFactor = smoothstep( fogNear, fogFar, vFogDepth * envHs );
   #endif
   fogFactor = min( fogFactor, uHaze.y ) * ( 1.0 - clamp( vEnvWorld.y * uHaze.z, 0.0, 0.35 ) );
-  gl_FragColor.rgb = mix( gl_FragColor.rgb, fogColor, fogFactor );
+  gl_FragColor.rgb = mix( gl_FragColor.rgb, fogColor * mix( vec3( 1.0 ), vec3( 0.84, 0.92, 1.02 ), envFar ), fogFactor );
 #endif
 `;
 
-const FEATURES = ['macro', 'tint', 'detail', 'patches', 'cracks', 'roughA', 'grass', 'track', 'haze'];
+const FEATURES = ['macro', 'tint', 'detail', 'patches', 'cracks', 'roughA', 'grass', 'track', 'canopy', 'haze'];
 
 // Build a patched MeshStandardMaterial. `params` are normal material params,
 // `o` selects features (see top of file) and their settings.

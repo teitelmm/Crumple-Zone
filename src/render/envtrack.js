@@ -103,7 +103,7 @@ export function buildTrack(env, A) {
     normalMap: hiQ ? T.asphaltN : null, normalScale: new THREE.Vector2(0.7, 0.7),
   }, {
     noise: T.noise, macro: { amp: 0.1, s1: 37, s2: 211 }, detail: env.q === 'high' ? { scale: 0.29, mix: 0.45 } : null,
-    patches: { scale: 60, thresh: 0.78, dark: 0.2, rough: 1.08 }, cracks: hiQ ? { scale: 17, width: 0.0018, dark: 0.4, mask: 0.64 } : null,
+    patches: { scale: 60, thresh: 0.78, dark: 0.2, rough: 1.08 }, cracks: hiQ ? { scale: 17, width: 0.0016, dark: 0.3, mask: 0.64 } : null,
     roughA: hiQ, track: { hw: HW, sigma: 1.6, rubber: 0.34, dust: 0.3 },
   }, 2);
   if (!hiQ) mat.roughness = 0.88;

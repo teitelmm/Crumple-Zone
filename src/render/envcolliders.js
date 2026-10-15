@@ -181,7 +181,7 @@ export class ColliderViews {
     const body = meterBox(W, H, wallD, 4, 0, 4).translate(0, 0, -s * tyreD / 2);
     addPart(c.id, 'wall', body, M, [0.95, 0.95, 0.93]);
     // painted cap
-    addPart(c.id, 'paint', new THREE.BoxGeometry(W, 0.06, wallD + 0.04).translate(0, H / 2 + 0.03, -s * tyreD / 2), M, [0.75, 0.12, 0.08]);
+    addPart(c.id, 'paint', new THREE.BoxGeometry(W, 0.06, wallD + 0.04).translate(0, H / 2 + 0.03, -s * tyreD / 2), M, [0.42, 0.05, 0.04]);
     // tyre stacks lining the inner face (inside the collider footprint)
     const n = Math.max(1, Math.floor(W / 0.6));
     const zc = s * (D / 2 - 0.3);

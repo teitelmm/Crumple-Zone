@@ -8,6 +8,8 @@ import { TRACK_WIDTH } from '../world/map.js';
 import { Batch, trs, boxUV, rng } from './envgeom.js';
 
 const HW = TRACK_WIDTH / 2;
+const SHIRTS = ['#1b1c1e', '#232427', '#2c2d30', '#e4e4df', '#d6d6d0', '#8d9093', '#5c6066', '#2b3a55', '#3b4f6e', '#4a5d7a',
+  '#26324a', '#6b3a2a', '#8f1d1d', '#b02a24', '#c8a43a', '#2f5d3a', '#d06a1e', '#1f4f9a', '#5a4632', '#c9c2b0'];
 const lin = (hex) => { const c = new THREE.Color(hex); return [c.r, c.g, c.b]; };
 
 // multi-material batch: one merged mesh per material key
@@ -265,8 +267,8 @@ export function buildGrandstands(env, kit) {
           if (((x + W / 2) % 20) < 1.4) continue; // aisles
           if (r() > fill) continue;
           const local = trs(x + (r() - 0.5) * 0.1, y, z0 + rowD - 0.32, (r() - 0.5) * 0.5, 1, 0.92 + r() * 0.16, 1);
-          const u = r();
-          const c = u < 0.45 ? new THREE.Color().setHSL(0, 0, 0.06 + r() * r() * 0.6) : new THREE.Color().setHSL(r(), 0.2 + r() * 0.35, 0.12 + r() * 0.25);
+          // mostly neutral clothing (black, grey, white, denim), some team colours
+          const c = new THREE.Color(SHIRTS[(r() * SHIRTS.length) | 0]).multiplyScalar(0.8 + r() * 0.35);
           crowd.push({ m: m.clone().multiply(local), c: c.multiplyScalar(shade) });
         }
       }

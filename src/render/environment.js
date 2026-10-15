@@ -8,12 +8,12 @@
 // envterrain.js (terrain, mountains, trees, grass).
 import * as THREE from 'three';
 import { makeTextures, DECALS } from './textures.js';
-import { envMaterial, groundMaterial } from './envshader.js';
+import { envMaterial, groundMaterial, patchMaterial } from './envshader.js';
 import { Batch, boxUV, chunkedInstances, rng, trs } from './envgeom.js';
 import { analyseTrack, buildTrack, buildTrackside } from './envtrack.js';
 import { ColliderViews } from './envcolliders.js';
 import { Kit, buildGantry, buildPits, buildGrandstands, buildInfield, buildDerbyProps, buildLabProps, coneGeometry } from './envprops.js';
-import { makeTerrain, buildTerrain, buildFlora, buildPerimeter, fillWorldMap, makeWorldMap, grassOptions } from './envterrain.js';
+import { makeTerrain, buildTerrain, buildFlora, buildPerimeter, fillWorldMap, makeWorldMap, grassOptions, HAZE } from './envterrain.js';
 
 const BLOCK_CELL = 4, BLOCK_HALF = 800, BLOCK_N = (BLOCK_HALF * 2) / BLOCK_CELL;
 
@@ -24,6 +24,7 @@ export class Environment {
     this.scene = view.scene;
     this.world = view.world;
     this.quality = this.q = view.quality;
+    const first = this.scene.children.length;
     this.T = makeTextures(view.renderer, this.q);
     this.worldMap = makeWorldMap();
     this.blockGrid = new Uint8Array(BLOCK_N * BLOCK_N);
@@ -62,6 +63,8 @@ export class Environment {
     buildPerimeter(this);
     fillWorldMap(this, treePos);
     this.flushOverlays();
+    // everything the environment put in the scene (for profiling / teardown)
+    this.objects = this.scene.children.slice(first);
   }
 
   // per-frame hook for animated scenery; camera is the active camera
@@ -97,15 +100,22 @@ export class Environment {
     if (hi) {
       // leaf cards: alpha tested, two-sided, and keeping the crown normals on back faces
       M.foliage = std({ map: T.leaves, vertexColors: true, roughness: 0.85, alphaTest: 0.42, side: THREE.DoubleSide, alphaToCoverage: this.q === 'high' });
-      M.foliage.onBeforeCompile = (sh) => {
-        sh.fragmentShader = sh.fragmentShader.replace('#include <normal_fragment_begin>', THREE.ShaderChunk.normal_fragment_begin.replace('normal *= faceDirection;', ''));
+      // two-sided cards and blades keep their (outward / upward) normals on back
+      // faces, otherwise half of them would be lit from below and turn black
+      const keepNormals = (m) => {
+        m.onBeforeCompile = (sh) => {
+          sh.fragmentShader = sh.fragmentShader.replace('#include <normal_fragment_begin>', THREE.ShaderChunk.normal_fragment_begin.replace('normal *= faceDirection;', ''));
+        };
+        m.customProgramCacheKey = () => 'keepNormals';
+        return m;
       };
-      M.foliage.customProgramCacheKey = () => 'foliage';
-      M.foliageFar = envMaterial({ vertexColors: true, roughness: 0.92 }, { haze: { scale: 0.6, max: 0.86 } });
-      M.tuft = std({ vertexColors: true, roughness: 0.95, side: THREE.DoubleSide });
+      keepNormals(M.foliage);
+      M.foliageFar = envMaterial({ vertexColors: true, roughness: 0.92 }, { haze: HAZE });
+      M.tuft = keepNormals(std({ vertexColors: true, roughness: 0.95, side: THREE.DoubleSide }));
     } else {
       M.foliage = new THREE.MeshLambertMaterial({ vertexColors: true });
-      M.foliageFar = M.foliage;
+      // trees on the hills take the same haze as the terrain under them
+      M.foliageFar = patchMaterial(new THREE.MeshLambertMaterial({ vertexColors: true }), { haze: HAZE });
       M.tuft = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
     }
     M.paint = new THREE.MeshStandardMaterial({ map: T.paint, vertexColors: true, transparent: true, depthWrite: false, roughness: 0.55 });
@@ -117,7 +127,7 @@ export class Environment {
     const noise = T.noise;
     this.padMat = groundMaterial({ map: T.asphalt, normalMap: hi ? T.asphaltN : null, normalScale: new THREE.Vector2(0.8, 0.8), roughness: hi ? 1 : 0.86 }, {
       noise, macro: { amp: 0.13, s1: 41, s2: 173 }, detail: this.q === 'high' ? { scale: 0.29, mix: 0.5 } : null,
-      patches: { scale: 34, thresh: 0.745, dark: 0.16, rough: 1.06 }, cracks: hi ? { scale: 11, width: 0.0018, dark: 0.4, mask: 0.62 } : null, roughA: hi,
+      patches: { scale: 34, thresh: 0.745, dark: 0.16, rough: 1.06 }, cracks: hi ? { scale: 11, width: 0.0016, dark: 0.3, mask: 0.62 } : null, roughA: hi,
     }, 1);
     this.labMat = groundMaterial({ map: T.concrete, normalMap: hi ? T.concreteN : null, roughness: hi ? 1 : 0.82 }, {
       noise, macro: { amp: 0.1, s1: 29, s2: 151 }, patches: { scale: 26, thresh: 0.74, dark: 0.22, rough: 0.75 }, roughA: hi,

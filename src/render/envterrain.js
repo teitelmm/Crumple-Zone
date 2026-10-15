@@ -5,12 +5,15 @@
 import * as THREE from 'three';
 import { ImprovedNoise } from 'three/addons/math/ImprovedNoise.js';
 import { TRACK_WIDTH } from '../world/map.js';
-import { envMaterial } from './envshader.js';
+import { envMaterial, patchMaterial } from './envshader.js';
 import { rng, trs, chunkedInstances, Batch } from './envgeom.js';
 
 const HW = TRACK_WIDTH / 2;
 export const FLAT = 756;      // terrain is flat (y = 0) inside this squircle radius
 const EDGE = 1850;            // terrain / mountain extent (keeps it inside the far plane)
+
+// distant haze shared by the terrain and the trees standing on it (envshader.js)
+export const HAZE = { scale: 0.5, max: 0.64, alt: 0.0003 };
 
 const smooth = (e0, e1, x) => { const t = Math.max(0, Math.min(1, (x - e0) / (e1 - e0))); return t * t * (3 - 2 * t); };
 // squircle distance: ~max(|x|, |z|) with rounded corners (the boundary corner
@@ -32,15 +35,22 @@ export function makeTerrain() {
     const ridge = 1 - Math.abs(fbm(x / 1100 + 3.1, z / 1100 - 1.7, 3, 4.5));
     const amp = 12 + (d - FLAT) * 0.06;
     let h = m * (amp * (hills * 0.75 + ridge * ridge * 0.6) + 3);
-    // a broken line of higher summits on the horizon
+    // spurs and gullies on the hillsides
+    h += m * smooth(800, 1050, d) * fbm(x / 190, z / 190, 3, 2.2) * 16;
+    // mountain range behind the hills: ridged noise, broken into massifs with
+    // lower gaps, so the skyline has layers instead of one even wall
     const r = Math.hypot(x, z);
-    const mt = smooth(1480, 1800, r);
+    const mt = smooth(1320, 1760, r);
     if (mt > 0) {
       const a = Math.atan2(z, x);
-      const peaks = 1 - Math.abs(fbm(Math.cos(a) * 2.4 + 9, Math.sin(a) * 2.4 - 4, 5, 2.5));
-      const range = smooth(-0.2, 0.5, fbm(Math.cos(a) * 1.1 + 3, Math.sin(a) * 1.1 + 1, 2, 8.5));
-      const fine = 1 - Math.abs(fbm(x / 150, z / 150, 4, 7.5));
-      h += mt * (15 + range * (190 * peaks * peaks * peaks + 30 * fine));
+      const massif = smooth(-0.3, 0.4, fbm(Math.cos(a) * 1.3 + 3, Math.sin(a) * 1.3 + 1, 2, 8.5));
+      let rg = 0, w = 1, f = 1, nw = 0;
+      for (let o = 0; o < 5; o++) {
+        const n = 1 - Math.abs(perlin.noise(x / 430 * f + 9.3, z / 430 * f - 4.1, 2.5 + o * 3.1));
+        rg += n * n * w; nw += w; w *= 0.5; f *= 2.1;
+      }
+      rg /= nw;
+      h += mt * (22 + massif * (45 + 285 * rg * rg));
     }
     return h;
   };
@@ -52,8 +62,8 @@ export function makeTerrain() {
 export function grassOptions(env) {
   return {
     noise: env.T.noise,
-    macro: { amp: 0.14, s1: 47, s2: 263 },
-    tint: { a: '#e8dca0', b: '#ffffff', scale: 520 },
+    macro: { amp: 0.18, s1: 47, s2: 263 },
+    tint: { a: '#e2d38f', b: '#ffffff', scale: 520 },
     detail: env.q === 'high' ? { scale: 0.31, mix: 0.55 } : null,
     grass: { map: env.worldMap, x0: -800, z0: -800, size: 1600, stripe: 4.5 },
   };
@@ -86,8 +96,10 @@ export function buildTerrain(env, TR) {
   g.setAttribute('uv', new THREE.BufferAttribute(U, 2));
   g.setIndex(I);
   g.computeVertexNormals();
-  // vertex colours: forest floor, dry slopes, rock on steep and high ground
+  // vertex colours: dry meadows and alpine grass; aEnv: forest canopy cover
+  // and bare rock (shaded in envshader.js)
   const N = g.attributes.normal;
+  const E = new Float32Array(n * n * 2);
   for (let k = 0; k < n * n; k++) {
     const x = P[k * 3], y = P[k * 3 + 1], z = P[k * 3 + 2];
     const d = sq(x, z);
@@ -95,21 +107,26 @@ export function buildTerrain(env, TR) {
     const slope = 1 - N.getY(k);
     const f = TR.forest(x, z);
     const rad = Math.hypot(x, z);
+    const wob = TR.fbm(x / 140, z / 140, 2, 5.7) * 40;
     let r = 1, gg = 1, b = 1;
-    const dry = smooth(0.0, 0.6, TR.fbm(x / 300, z / 300, 2, 3.3)) * 0.16 * inner;
-    r += dry; gg += dry * 0.5;
-    // forest canopy: patchy near the boundary, covering most of the far hills
-    const cover = smooth(0.62, 0.45, f - smooth(850, 1400, rad) * 0.3) * inner;
-    const mottle = 0.85 + 0.3 * (TR.fbm(x / 45, z / 45, 2, 6.1) * 0.5 + 0.5);
-    r += (0.5 * mottle - r) * cover; gg += (0.66 * mottle - gg) * cover; b += (0.62 * mottle - b) * cover;
-    const rock = Math.max(smooth(0.35, 0.6, slope), smooth(150, 230, y)) * inner;
-    r += (1.25 - r) * rock; gg += (0.98 - gg) * rock; b += (1.9 - b) * rock;
+    const dry = (smooth(0.0, 0.6, TR.fbm(x / 300, z / 300, 2, 3.3)) * 0.16 + smooth(120, 220, y + wob) * 0.22) * inner;
+    r += dry; gg += dry * 0.45; b -= dry * 0.2;
+    // forest where the tree placement noise is high (the 3D trees stand on it),
+    // denser on the far hills, thinning out toward a ragged tree line
+    const cover = smooth(0.4, 0.56, f + smooth(850, 1400, rad) * 0.22) * inner * (1 - smooth(150, 240, y + wob)) * (1 - smooth(0.42, 0.6, slope));
+    const rock = Math.max(smooth(0.38, 0.62, slope), smooth(190, 300, y + wob * 1.5)) * inner;
     C[k * 3] = r; C[k * 3 + 1] = gg; C[k * 3 + 2] = b;
+    E[k * 2] = cover * 0.96; E[k * 2 + 1] = rock * 0.9;
   }
   g.setAttribute('color', new THREE.BufferAttribute(C, 3));
+  g.setAttribute('aEnv', new THREE.BufferAttribute(E, 2));
   g.computeBoundingSphere();
-  const mat = envMaterial({ map: env.T.grass, vertexColors: true, roughness: 0.95 },
-    { ...grassOptions(env), haze: { scale: 0.6, max: 0.7, alt: 0.0004 } });
+  // the terrain is matte: the low tier shades it with Lambert (much cheaper on
+  // phones, where the hills can cover a good part of the screen)
+  const opts = { ...grassOptions(env), canopy: true, haze: HAZE };
+  const mat = q === 'low'
+    ? patchMaterial(new THREE.MeshLambertMaterial({ map: env.T.grass, vertexColors: true }), opts)
+    : envMaterial({ map: env.T.grass, vertexColors: true, roughness: 0.95 }, opts);
   const mesh = new THREE.Mesh(g, mat);
   mesh.receiveShadow = q !== 'low';
   env.scene.add(mesh);
@@ -317,23 +334,35 @@ function bush(r, cards) {
   return b.build();
 }
 
+// Clump of uncut grass: tapered, curving blades (two triangles each) fanning
+// out from the base, a few of them dry. Normals lean up so the clump lights
+// like the lawn it stands in (the material keeps them on back faces too).
 function tuft(r) {
-  const P = [], C = [];
-  const blades = 9;
+  const P = [], C = [], Nn = [];
+  const blades = 10;
   for (let k = 0; k < blades; k++) {
-    const a = k / blades * Math.PI * 2 + r() * 0.6;
-    const lean = 0.04 + r() * 0.14, h = 0.1 + r() * 0.22, w = 0.018;
-    const d0 = r() * 0.08, bx = Math.cos(a) * d0, bz = Math.sin(a) * d0;
-    const px = -Math.sin(a) * w, pz = Math.cos(a) * w;
-    P.push(bx - px, 0, bz - pz, bx + px, 0, bz + pz, bx + Math.cos(a) * lean, h, bz + Math.sin(a) * lean);
-    const g = 0.85 + r() * 0.4, dry = r() < 0.2 ? 1 : 0;
-    C.push(0.1, 0.15, 0.05, 0.1, 0.15, 0.05, (0.26 + dry * 0.14) * g, (0.34 + dry * 0.04) * g, 0.1 * g);
+    const a = k / blades * Math.PI * 2 + r() * 0.5;
+    const ca = Math.cos(a), sa = Math.sin(a);
+    const h = 0.22 + r() * 0.3, lean = 0.06 + r() * 0.16, w = 0.022 + r() * 0.012;
+    const d0 = r() * 0.07, bx = ca * d0, bz = sa * d0;
+    const px = -sa * w, pz = ca * w; // blade width direction
+    const dry = r() < 0.22;
+    const g = 0.85 + r() * 0.3;
+    const base = [0.05 * g, 0.075 * g, 0.022 * g];
+    const tip = dry ? [0.30 * g, 0.26 * g, 0.12 * g] : [0.14 * g, 0.20 * g, 0.05 * g];
+    const midC = base.map((v, i) => v + (tip[i] - v) * 0.6);
+    // base, middle (bent outward), tip (bent further and drooping)
+    const m = [bx + ca * lean * 0.35, h * 0.55, bz + sa * lean * 0.35], t = [bx + ca * lean, h, bz + sa * lean];
+    const quad = [[bx - px, 0, bz - pz], [bx + px, 0, bz + pz], [m[0] + px * 0.6, m[1], m[2] + pz * 0.6], [m[0] - px * 0.6, m[1], m[2] - pz * 0.6]];
+    P.push(...quad[0], ...quad[1], ...quad[2], ...quad[0], ...quad[2], ...quad[3], ...quad[3], ...quad[2], ...t);
+    C.push(...base, ...base, ...midC, ...base, ...midC, ...midC, ...midC, ...midC, ...tip);
+    const nx = ca * 0.35, nz = sa * 0.35, ny = 0.94;
+    for (let v = 0; v < 9; v++) Nn.push(nx, ny, nz);
   }
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
   g.setAttribute('color', new THREE.Float32BufferAttribute(C, 3));
-  // normals point up so the blades light like the lawn around them
-  g.setAttribute('normal', new THREE.Float32BufferAttribute(new Array(P.length).fill(0).map((_, i) => i % 3 === 1 ? 1 : 0), 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(Nn, 3));
   return g;
 }
 
@@ -346,7 +375,7 @@ export function buildFlora(env, TR, A) {
     inner: q === 'high' ? 1300 : q === 'medium' ? 900 : 450,
     outer: q === 'high' ? 3000 : q === 'medium' ? 2000 : 900,
     bush: q === 'high' ? 420 : q === 'medium' ? 260 : 110,
-    tuft: q === 'high' ? 6000 : q === 'medium' ? 2500 : 0,
+    tuft: q === 'high' ? 5200 : q === 'medium' ? 2000 : 0,
   };
   const pts = world.track.pts;
   // coarse grid of distance to the track centre line for fast rejection
@@ -457,23 +486,31 @@ export function buildFlora(env, TR, A) {
   }
   if (bushes.length) env.scene.add(chunkedInstances(bush(rng(5), cards), treeMat, bushes, 720, { castShadow: false }).group);
 
-  // grass tufts near the track edges and around the paved zones
+  // Uncut grass in clumps where the mowers don't reach: along the foot of the
+  // barriers and fences, around posts, and in the rough beyond the verge. The
+  // mown verge next to the track only gets the odd small clump.
   if (counts.tuft) {
     const tufts = [];
     guard = 0;
-    while (tufts.length < counts.tuft && guard++ < counts.tuft * 6) {
+    while (tufts.length < counts.tuft && guard++ < counts.tuft * 4) {
       const i = (r() * pts.length) | 0, p = pts[i];
       const side = r() < 0.5 ? -1 : 1;
-      // mostly right at the edge of the mown verge, some along the barrier line
-      const o = r() < 0.6 ? HW + 3.2 + Math.pow(r(), 1.5) * 4 : HW + 8 + r() * 3.5;
-      const x = p.x - p.tz * o * side + (r() - 0.5) * 2, z = p.z + p.tx * o * side + (r() - 0.5) * 2;
-      // not on gravel (outside of corners), kerbs, roads or near barriers
-      if (world.surfaceAt(x, z).type !== 'grass') continue;
-      if (A.gravel[i] === side) continue;
-      if (Math.abs(o - (HW + 9.2)) < 0.8) continue;
-      if (env.blocked(x, z, 0.5)) continue;
-      const sc = 0.5 + r() * 0.6;
-      tufts.push({ m: trs(x, 0, z, r() * 6.28, sc, sc * (0.8 + r() * 0.5), sc) });
+      const u = r();
+      let o, n, spread;
+      if (u < 0.55) { o = r() < 0.5 ? HW + 8.1 + r() * 0.35 : HW + 10.1 + r() * 0.8; n = 3 + (r() * 5 | 0); spread = 0.5; }
+      else if (u < 0.85) { o = HW + 16 + r() * 18; n = 2 + (r() * 6 | 0); spread = 1.2; }
+      else { o = HW + 2.6 + r() * 4; n = 1 + (r() * 2 | 0); spread = 0.3; }
+      // not on gravel (outside of corners), kerbs or roads
+      if (A.gravel[i] === side && o < HW + 8.6) continue;
+      const cx = p.x - p.tz * o * side, cz = p.z + p.tx * o * side;
+      if (world.surfaceAt(cx, cz).type !== 'grass' || env.blocked(cx, cz, 0.5)) continue;
+      for (let k = 0; k < n && tufts.length < counts.tuft; k++) {
+        // barrier clumps stretch along the barrier foot, the others are round
+        const along = (r() - 0.5) * 2 * spread * (u < 0.55 ? 3 : 1), across = (r() - 0.5) * 2 * spread * (u < 0.55 ? 0.4 : 1);
+        const x = cx + p.tx * along - p.tz * side * across, z = cz + p.tz * along + p.tx * side * across;
+        const sc = (u < 0.85 ? 0.8 : 0.55) + r() * 0.6;
+        tufts.push({ m: trs(x, 0, z, r() * 6.28, sc, sc * (0.75 + r() * 0.6), sc) });
+      }
     }
     env.scene.add(chunkedInstances(tuft(rng(3)), env.M.tuft, tufts, 300, { castShadow: false }).group);
   }
@@ -497,8 +534,7 @@ export function buildPerimeter(env) {
     const n = Math.floor(L / 4);
     for (let k = 0; k <= n; k++) posts.add(postGeo, trs(x0 + (x1 - x0) * k / n, 0, z0 + (z1 - z0) * k / n, yaw));
   }
-  const fm = new THREE.MeshStandardMaterial({ map: env.T.fence, transparent: true, depthWrite: false, side: THREE.DoubleSide, roughness: 0.5, metalness: 0.5 });
-  env.scene.add(new THREE.Mesh(fence.build(false), fm));
+  env.scene.add(new THREE.Mesh(fence.build(false), env.M.fence));
   env.scene.add(new THREE.Mesh(posts.build(false), env.M.steel));
 }
 
