@@ -11,6 +11,7 @@ export function getTemplate(spec) {
 
 const G = 9.81;
 const RHO = 1.225;
+const GAIN = 1.6; // arcade yaw-assist strength
 
 // Pacejka "magic formula" shape (normalised, peak 1 at ~7.5° slip)
 function pac(a) {
@@ -33,6 +34,7 @@ export class Vehicle {
     this.name = opts.name || spec.name;
     this.isPlayer = !!opts.isPlayer;
     this.tractionControl = opts.tractionControl ?? true;
+    this.assist = opts.assist ?? true; // arcade handling assist
     this.controls = { throttle: 0, brake: 0, steer: 0, handbrake: 0, hold: 0 }; // hold: brake without shifting to reverse
     this.events = [];
 
@@ -52,7 +54,7 @@ export class Vehicle {
         radius: d.wheelRadius, width: d.tireWidth,
         restLen: spec.susp.restLen, k, c, arb: k * spec.susp.arb,
         brakeShare: h.axle === 0 ? 0.36 : 0.14,
-        grip: h.axle === 0 ? 1.0 : 1.1,
+        grip: h.axle === 0 ? 1.05 : 1.15, // arcade: rear planted
         comp: 0, prevComp: 0, contact: false, load: 0, staticLoad: load,
         susp: spec.susp.restLen,
         vLong: 0, slide: 0, spinning: false, locked: false,
@@ -250,8 +252,21 @@ export class Vehicle {
 
     // steering with speed-sensitive lock
     const lock = spec.steerLock * Math.PI / 180;
-    const sf = 1 / Math.sqrt(1 + Math.pow(this.speed / 11, 2));
-    this.steerAngle = c.steer * lock * Math.max(sf, 0.12);
+    // arcade: keep more steering lock at speed
+    const sf = 1 / Math.sqrt(1 + Math.pow(this.speed / 19, 2));
+    this.steerAngle = c.steer * lock * Math.max(sf, 0.2);
+    // yaw assist target: the yaw rate the steering asks for (bicycle model)
+    const hd = Math.atan2(f[2], f[0]);
+    if (this.lastHeading !== undefined && dt > 0) {
+      let dh = hd - this.lastHeading;
+      if (dh > Math.PI) dh -= 2 * Math.PI; else if (dh < -Math.PI) dh += 2 * Math.PI;
+      this.yawRate = dh / dt;
+    }
+    this.lastHeading = hd;
+    // never ask for more yaw than the tyres can hold (~1.1 g of cornering)
+    const kin = this.speedFwd * Math.tan(this.steerAngle) / spec.dims.wheelbase;
+    const lim = 1.4 * G / Math.max(3, Math.abs(this.speedFwd));
+    this.yawTarget = clamp(kin, -lim, lim);
 
     // overheating
     if (this.radiatorLeak > 0) this.coolant = Math.max(0, this.coolant - this.radiatorLeak * dt);
@@ -364,11 +379,13 @@ export class Vehicle {
       // load sensitivity: a heavily loaded tyre grips proportionally less (gives natural understeer)
       const loadRatio = Fs / w.staticLoad;
       const mu = spec.tireMu * surf.mu * w.grip * clamp(1.14 - 0.14 * loadRatio, 0.72, 1.2);
+      // arcade: lateral grip boosted more than longitudinal so cars corner hard but still brake/launch believably
+      const latMu = this.assist ? 1.22 : 1;
       const Fmax = mu * Fs;
 
       // lateral demand first, so traction control can budget the friction circle
       const alpha = Math.atan2(vS, Math.max(Math.abs(vL), 2.5));
-      const FyWant = Fmax * pac(alpha);
+      const FyWant = Fmax * latMu * pac(alpha);
 
       // longitudinal
       let Fx = 0;
@@ -376,7 +393,7 @@ export class Vehicle {
       if (w.driven && this.driveForce !== 0) {
         let Fd = this.driveForce * w.driveShare;
         if (this.tractionControl) {
-          const room = Math.sqrt(Math.max(0, (Fmax * 0.95) ** 2 - FyWant * FyWant));
+          const room = Math.sqrt(Math.max(0, (Fmax * 0.95) ** 2 - (FyWant / latMu) ** 2));
           const cap = Math.max(room, Fmax * 0.15);
           if (Math.abs(Fd) > cap) Fd = Math.sign(Fd) * cap;
         }
@@ -406,7 +423,7 @@ export class Vehicle {
         if (driving && Math.sign(Fx) === Math.sign(this.driveForce)) w.spinning = true;
         Fx = Math.sign(Fx) * Fmax * (w.spinning ? 0.82 : 0.97);
       }
-      const latCap = Math.sqrt(Math.max(0, Fmax * Fmax - Fx * Fx));
+      const latCap = latMu * Math.sqrt(Math.max(0, Fmax * Fmax - Fx * Fx));
       if (Fy > latCap) Fy = latCap; else if (Fy < -latCap) Fy = -latCap;
 
       w.slide = Math.abs(alpha) > 0.14 ? Math.min(1, (Math.abs(vS) - 1.2) / 6) : 0;
@@ -434,6 +451,17 @@ export class Vehicle {
       }
     }
     this.groundedWheels = grounded;
+    // arcade yaw assist: nudge the car's yaw rate toward what the steering asks for.
+    // Helps turn-in, and catches slides (acts like counter-steer) so the car is easy to drive.
+    if (grounded >= 3 && this.assist && Math.abs(this.speedFwd) > 2 && !this.engineDead) {
+      const L = spec.dims.length, W = spec.dims.width;
+      const Iyaw = spec.mass * (L * L + W * W) / 12;
+      const err = clamp(this.yawTarget - (this.yawRate || 0), -0.6, 0.6);
+      const hb = this.controls.handbrake > 0.5 ? 0.25 : 1; // let handbrake turns swing out
+      const t = Iyaw * err * GAIN * hb * Math.min(1, Math.abs(this.speedFwd) / 8);
+      // yawRate is measured about world up (heading = atan2(fz, fx)), so torque about -up
+      tqx -= up[0] * t; tqy -= up[1] * t; tqz -= up[2] * t;
+    }
     if (grounded) this.applyTorque(tqx, tqy, tqz);
   }
 

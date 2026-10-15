@@ -69,7 +69,7 @@ function buildTrack() {
     pts[i].curv = dh / (b.s - a.s + (b.s < a.s ? total : 0)); // +ve = turning right (toward local +z)
   }
   // AI target speed from curvature, then a backward braking pass
-  for (const p of pts) p.vmax = Math.min(70, Math.sqrt(0.92 * 9.81 / Math.max(1e-4, Math.abs(p.curv))));
+  for (const p of pts) p.vmax = Math.min(70, Math.sqrt(1.12 * 9.81 / Math.max(1e-4, Math.abs(p.curv))));
   for (let pass = 0; pass < 2; pass++)
     for (let i = N - 1; i >= 0; i--) {
       const nx = pts[(i + 1) % N];

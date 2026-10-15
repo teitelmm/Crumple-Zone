@@ -89,11 +89,11 @@ export class Input {
       this.digitalSteer = analogSteer;
     } else if (dir !== 0) {
       // ramp toward full lock; faster when reversing direction
-      const rate = Math.sign(this.digitalSteer) !== dir && this.digitalSteer !== 0 ? 6 : 2.6;
+      const rate = Math.sign(this.digitalSteer) !== dir && this.digitalSteer !== 0 ? 9 : 4.5;
       this.digitalSteer += dir * rate * dt;
       this.digitalSteer = Math.max(-1, Math.min(1, this.digitalSteer));
     } else {
-      const back = 5 * dt;
+      const back = 7 * dt;
       this.digitalSteer = Math.abs(this.digitalSteer) < back ? 0 : this.digitalSteer - Math.sign(this.digitalSteer) * back;
     }
     if (!this.enabled) { thr = 0; brk = 0; }
