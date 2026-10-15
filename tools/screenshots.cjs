@@ -95,7 +95,7 @@ const SCENES = [
       requestAnimationFrame(f);
     }));
     const file = path.join(outDir, sc.name + '.png');
-    await page.screenshot({ path: file });
+    await page.screenshot({ path: file, timeout: 180000 });
     report.push({ name: sc.name, file, ms: Date.now() - t0, swiftshaderFps: perf, info, errors });
     await ctx.close();
   }
