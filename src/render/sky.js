@@ -23,11 +23,11 @@ export const SUN_ILLUMINANCE = 8.5;
 
 const LAMBDA = [680, 550, 440];
 const TAU_R = LAMBDA.map(l => 0.097 * Math.pow(550 / l, 4)); // Rayleigh zenith optical depth
-const TAU_M = LAMBDA.map(l => 0.05 * Math.pow(550 / l, 1.3)); // aerosol (light summer haze)
+const TAU_M = LAMBDA.map(l => 0.035 * Math.pow(550 / l, 1.3)); // aerosol (clear summer day)
 const TAU = TAU_R.map((r, i) => r + TAU_M[i]);
-const MIE_G = 0.76;
-const MULTI = 0.14; // multiple-scattering fill, keeps the zenith from going navy
-const SKY_GAIN = 1.65; // artistic: a brighter sky than strict single scattering
+const MIE_G = 0.8;
+const MULTI = 0.12; // multiple-scattering fill, keeps the zenith from going navy
+const SKY_GAIN = 1.5; // artistic: a brighter sky than strict single scattering
 
 function airmass(mu) {
   mu = Math.min(1, Math.max(0, mu));
@@ -94,7 +94,7 @@ export const SKY_IRRADIANCE = (() => {
 const v3 = (a) => `vec3(${a.map(x => x.toFixed(6)).join(', ')})`;
 const CLOUD_SUN = SUN_COLOR.toArray().map(c => c * SUN_ILLUMINANCE * 0.27);
 const CLOUD_AMB = SKY_IRRADIANCE.toArray().map(c => c * 0.55);
-const GROUND_ALBEDO = [0.085, 0.095, 0.07];
+const GROUND_ALBEDO = [0.095, 0.1, 0.088]; // asphalt/concrete/grass mix, near neutral
 const GROUND = GROUND_ALBEDO.map((a, i) => a / Math.PI * (SUN_ILLUMINANCE * SUN_DIR.y * SUN_COLOR.toArray()[i] + SKY_IRRADIANCE.toArray()[i]));
 const HILLS = [0.045, 0.06, 0.04].map((a, i) => a / Math.PI * (SUN_ILLUMINANCE * 0.5 * SUN_COLOR.toArray()[i] + SKY_IRRADIANCE.toArray()[i]));
 
@@ -261,6 +261,10 @@ void main() {
     float f = 1.0 - exp( -3.0 * pow( t / 2200.0, 2.2 ) );
     col = mix( CZ_GROUND, col, f );
   } else {
+    // single scattering alone makes skylight far bluer than measured shade
+    // (~10000 K); multiple scattering and bounce from the sunlit surroundings
+    // neutralise it, so the ambient/reflection sky is a quarter less saturated
+    col = mix( vec3( dot( col, vec3( 0.2126, 0.7152, 0.0722 ) ) ), col, 0.75 );
     float az = atan( d.z, d.x );
     float band = 0.03 + 0.012 * sin( az * 3.0 + 1.3 ) + 0.008 * sin( az * 7.0 + 0.4 ) + 0.004 * sin( az * 19.0 + 2.0 );
     float hills = 1.0 - smoothstep( band - 0.004, band + 0.004, d.y );

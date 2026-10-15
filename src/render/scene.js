@@ -17,7 +17,9 @@ import { SkyDome, SUN_DIR, SUN_COLOR, SUN_ILLUMINANCE, HORIZON_COLOR, SKY_IRRADI
 import { SunRig, installLightingChunks } from './lighting.js';
 import { createPost, installToneMapping } from './post.js';
 
-const EXPOSURE = 1.0;
+// sunlit 18% grey -> ~60% sRGB, sunlit white ~91%, clouds ~95%, shaded asphalt
+// ~17% (see the tone curve in post.js)
+const EXPOSURE = 0.85;
 // pixel budgets (drawing-buffer pixels) per tier; the tier caps DPR as before
 const DPR_CAP = { high: 2, medium: 1.25, low: 1.25 };
 const PIXEL_BUDGET = { high: 2560 * 1440, medium: 1920 * 1080, low: 1280 * 720 * 1.1 };
@@ -53,10 +55,14 @@ export class WorldView {
     this.sunColor = SUN_COLOR.clone();
     this.sunIntensity = SUN_ILLUMINANCE;
     this.skyIrradiance = SKY_IRRADIANCE.clone();
-    this.exposure = EXPOSURE;
+    this._exposure = EXPOSURE;
+    this._haze = [0, 0, 0];
+    this._invRef = new THREE.Color(1 / HORIZON_COLOR.r, 1 / HORIZON_COLOR.g, 1 / HORIZON_COLOR.b);
 
-    // aerial perspective: clear near by, ~40% haze at 1 km, ~95% by 2.2 km (see lighting.js)
-    scene.fog = new THREE.Fog(HORIZON_COLOR.clone(), 50, 2200);
+    // aerial perspective: clear near by, ~7% haze at 500 m, ~36% at 1 km, ~95% by
+    // 2.2 km (see lighting.js). near/far are chosen so shaders that do their own
+    // smoothstep(fogNear, fogFar, depth) get nearly the same amounts.
+    scene.fog = new THREE.Fog(HORIZON_COLOR.clone(), 120, 2200);
     this.horizonColor = scene.fog.color;
 
     this.skyDome = new SkyDome(scene, quality);
@@ -74,7 +80,9 @@ export class WorldView {
     const skyFill = SKY_IRRADIANCE.clone();
     const lum = skyFill.r * 0.2126 + skyFill.g * 0.7152 + skyFill.b * 0.0722;
     skyFill.lerp(new THREE.Color(lum, lum, lum), 0.35);
-    this.hemi = new THREE.HemisphereLight(skyFill, bounce, 1.0);
+    // x1.3: the clouds in the environment add about that much to the PBR ambient,
+    // so Lambert and Standard surfaces in shade come out alike
+    this.hemi = new THREE.HemisphereLight(skyFill, bounce, 1.3);
     scene.add(this.hemi);
 
     this.sunRig = new SunRig(scene, quality);
@@ -86,8 +94,16 @@ export class WorldView {
 
   // horizon haze (linear radiance) toward `dir`, scaled by any fog colour change
   hazeAt(dir, out = new THREE.Color()) {
-    const c = hazeRadiance(dir);
-    return out.setRGB(c[0], c[1], c[2]).multiply(this.horizonColor).multiply(this._invRef || (this._invRef = new THREE.Color(1 / HORIZON_COLOR.r, 1 / HORIZON_COLOR.g, 1 / HORIZON_COLOR.b)));
+    const c = hazeRadiance(dir, this._haze);
+    return out.setRGB(c[0], c[1], c[2]).multiply(this.horizonColor).multiply(this._invRef);
+  }
+
+  // exposure multiplier ahead of the tone curve, applied on every tier
+  get exposure() { return this._exposure; }
+  set exposure(v) {
+    this._exposure = v;
+    this.renderer.toneMappingExposure = v;
+    if (this.post) this.post.exposure = v;
   }
 
   followSun(target, camera = null) {

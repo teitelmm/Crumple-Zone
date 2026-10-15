@@ -1,13 +1,15 @@
 // Tone mapping and post-processing.
 //
-// Every tier uses the same tone curve: AgX with a mild "punchy" look (more
-// contrast and saturation than stock AgX, highlights still roll off to white so
-// brake lights and sun glints keep their hue). On 'low' it runs inside each
+// Every tier uses the same tone curve: AgX reshaped toward a camera response
+// (shoulder: sunlit whites and clouds reach near-white instead of AgX's flat
+// ~85%; softer toe: shade keeps detail) plus a saturation look; very bright
+// colours still roll off toward white smoothly. On 'low' it runs inside each
 // material (CustomToneMapping, no extra passes). On 'medium'/'high' the scene is
 // rendered to a half-float target and the final pass applies it after bloom:
 //
 //   high:   scene (4x MSAA, HDR) -> bloom (half-res chain) -> final (AO + bloom + tone map + grade + vignette + sRGB + dither) -> screen
 //           GTAO runs at half resolution from its own normal/depth pass and is multiplied in by the final pass
+//           (no half-float MSAA on the GPU: plain HDR target and FXAA after the final pass, as on medium)
 //   medium: scene (HDR)          -> bloom (quarter-res)    -> final -> FXAA -> screen
 //   low:    direct render (no composer)
 import * as THREE from 'three';
@@ -40,12 +42,22 @@ vec3 czToneMap( vec3 color ) {
   const float minEv = -12.47393;
   const float maxEv = 4.026069;
   color = inset * ( toRec2020 * color );
-  color = clamp( ( log2( max( color, 1e-10 ) ) - minEv ) / ( maxEv - minEv ), 0.0, 1.0 );
+  vec3 ev = clamp( log2( max( color, 1e-10 ) ), -14.0, 12.0 );
+  // Photographic shoulder: AgX keeps ~6.5 stops above middle grey, so a sunlit
+  // white wall lands at ~85% and daylight looks flat. Above ~0.75 each stop
+  // counts ~1.85 (soft knee), so sunlit whites and clouds reach ~91-95%.
+  ev += 0.595 * log2( 1.0 + exp2( ( ev + 0.4 ) * 1.4285714 ) );
+  // Softer toe: below ~0.06 each stop counts ~0.82, so shade keeps detail
+  // instead of sinking into navy (AgX's toe is steeper than a camera's).
+  ev += 0.18 * log2( 1.0 + exp2( -4.0 - ev ) );
+  color = clamp( ( ev - minEv ) / ( maxEv - minEv ), 0.0, 1.0 );
   color = czAgxContrast( color );
-  // look: a touch more contrast and colour than neutral AgX
+  // look: AgX's inset leaves colours muted; restore saturation in the mid-tones,
+  // less in deep shadow (skylight already tints them blue) and in highlights
+  // (keeps sunlit red paint from clipping).
   float luma = dot( color, vec3( 0.2126, 0.7152, 0.0722 ) );
-  color = pow( max( color, 0.0 ), vec3( 1.16 ) );
-  color = luma + 1.22 * ( color - luma );
+  float sat = mix( 1.12, 1.32, smoothstep( 0.08, 0.3, luma ) ) * ( 1.0 - 0.2 * smoothstep( 0.5, 0.9, luma ) );
+  color = luma + sat * ( color - luma );
   color = outset * color;
   color = pow( max( color, 0.0 ), vec3( 2.2 ) );
   return clamp( fromRec2020 * color, 0.0, 1.0 );
@@ -187,9 +199,9 @@ void main() {
   }
   hdr += uBloom * texture2D( tBloom, vUv ).rgb;
   vec3 c = czToneMap( hdr * uExposure );
-  // grade: faintly warm highlights, cool shadows
+  // grade: faintly warm highlights; shadows only a touch cool (skylight already tints them)
   float l = dot( c, vec3( 0.2126, 0.7152, 0.0722 ) );
-  c *= mix( vec3( 0.975, 0.995, 1.035 ), vec3( 1.02, 1.0, 0.975 ), smoothstep( 0.05, 0.6, l ) );
+  c *= mix( vec3( 0.99, 1.0, 1.015 ), vec3( 1.015, 1.0, 0.98 ), smoothstep( 0.05, 0.6, l ) );
   // vignette
   vec2 q = ( vUv - 0.5 ) * vec2( uAspect, 1.0 );
   float r2 = dot( q, q ) / ( 0.25 * ( uAspect * uAspect + 1.0 ) );
@@ -244,18 +256,21 @@ class FinalPass extends Pass {
 }
 
 // GTAO whose normal/depth pre-pass skips things that don't belong in the depth
-// buffer: points, lines, sprites, transparent decals that don't write depth
-// (skid marks, smoke) and anything flagged userData.noAO. Ground layers (opaque,
-// no depth write) stay in so cars get contact shading on the ground.
+// buffer: points, lines, sprites, transparent surfaces (skid marks, smoke,
+// glass), alpha-tested cards (the override material can't cut them out, so
+// foliage/tuft quads would occlude as solid rectangles) and anything flagged
+// userData.noAO. Opaque ground layers (no depth write) stay in so cars get
+// contact shading on the ground.
 class ContactAOPass extends GTAOPass {
   constructor(...args) {
     super(...args);
     const cache = this._visibilityCache;
+    const cutout = (m) => m && (m.transparent || m.alphaTest > 0 || m.alphaHash || m.visible === false);
     this._hide = (o) => {
       cache.set(o, o.visible);
       const m = o.material;
       if (o.isPoints || o.isLine || o.isSprite || o.userData.noAO ||
-        (o.isMesh && m && !Array.isArray(m) && m.transparent && m.depthWrite === false)) o.visible = false;
+        (o.isMesh && (Array.isArray(m) ? m.every(cutout) : cutout(m)))) o.visible = false;
     };
     this._restore = (o) => { const v = cache.get(o); if (v !== undefined) o.visible = v; };
   }
@@ -278,9 +293,12 @@ export class PostFX {
     this.useAO = quality === 'high';
     this.ao = null; // created on first render (needs the camera)
     const size = this.size = renderer.getDrawingBufferSize(new THREE.Vector2());
+    // MSAA on the HDR target where the GPU supports it for half-float, else FXAA
+    const samples = quality === 'high' ? Math.min(4, maxHalfFloatSamples(renderer)) : 0;
+    this.msaa = samples > 1;
     const rt = new THREE.WebGLRenderTarget(Math.max(1, size.x), Math.max(1, size.y), {
       type: THREE.HalfFloatType,
-      samples: quality === 'high' ? 4 : 0,
+      samples: this.msaa ? samples : 0,
       depthBuffer: true,
       stencilBuffer: false,
     });
@@ -293,7 +311,7 @@ export class PostFX {
     this.composer.addPass(this.renderPass);
     this.composer.addPass(this.bloom);
     this.composer.addPass(this.final);
-    if (quality !== 'high') {
+    if (!this.msaa) {
       this.fxaa = new ShaderPass(FXAAShader);
       this.composer.addPass(this.fxaa);
     }
@@ -352,17 +370,20 @@ export class PostFX {
   render(camera) {
     this.renderPass.camera = camera;
     this.ensureAO(camera);
-    const sm = this.renderer.shadowMap;
-    const autoUpdate = sm.autoUpdate;
     if (this.ao) {
-      this.syncAOCamera(camera);
-      this.ao.render(this.renderer, null, null);
-      // the AO normal pass already refreshed the shadow map this frame
+      // The AO normal pass hides decals, particles and alpha-tested cards, so it
+      // must not refresh the shadow map (they would lose their shadows); the
+      // main pass renders it once, with everything visible.
+      const sm = this.renderer.shadowMap;
+      const autoUpdate = sm.autoUpdate, needsUpdate = sm.needsUpdate;
       sm.autoUpdate = false;
       sm.needsUpdate = false;
+      this.syncAOCamera(camera);
+      this.ao.render(this.renderer, null, null);
+      sm.autoUpdate = autoUpdate;
+      sm.needsUpdate = needsUpdate;
     }
     this.composer.render();
-    sm.autoUpdate = autoUpdate;
   }
 
   dispose() {
@@ -371,6 +392,18 @@ export class PostFX {
     this.bloom.dispose();
     this.final.dispose();
     if (this.ao) this.ao.dispose();
+  }
+}
+
+// Largest MSAA sample count the GPU offers for RGBA16F renderbuffers (some
+// mobile/older GPUs offer none; a multisampled target would then be incomplete).
+function maxHalfFloatSamples(renderer) {
+  try {
+    const gl = renderer.getContext();
+    const s = gl.getInternalformatParameter(gl.RENDERBUFFER, gl.RGBA16F, gl.SAMPLES);
+    return s && s.length ? Math.max(...s) : 0;
+  } catch (err) {
+    return 0;
   }
 }
 
