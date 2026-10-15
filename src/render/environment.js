@@ -1,9 +1,21 @@
-// Static world visuals: ground layers, circuit, collider meshes (walls, ramps,
-// poles), trees, hills, grandstand and props. Pure presentation: physics lives
-// in src/world/map.js and is never changed from here.
+// Static world visuals: ground layers, circuit, collider meshes, landscape,
+// buildings and props. Pure presentation: physics lives in src/world/map.js
+// and is never changed from here.
+//
+// Modules: textures.js (procedural maps), envshader.js (ground shader
+// patches), envgeom.js (batching / instancing helpers), envtrack.js (circuit),
+// envcolliders.js (collider meshes), envprops.js (buildings and dressing),
+// envterrain.js (terrain, mountains, trees, grass).
 import * as THREE from 'three';
-import { makeTextures } from './textures.js';
-import { TRACK_WIDTH } from '../world/map.js';
+import { makeTextures, DECALS } from './textures.js';
+import { envMaterial, groundMaterial, patchMaterial } from './envshader.js';
+import { Batch, boxUV, chunkedInstances, rng, trs } from './envgeom.js';
+import { analyseTrack, buildTrack, buildTrackside } from './envtrack.js';
+import { ColliderViews } from './envcolliders.js';
+import { Kit, buildGantry, buildPits, buildGrandstands, buildInfield, buildDerbyProps, buildLabProps, coneGeometry } from './envprops.js';
+import { makeTerrain, buildTerrain, buildFlora, buildPerimeter, fillWorldMap, makeWorldMap, grassOptions, HAZE } from './envterrain.js';
+
+const BLOCK_CELL = 4, BLOCK_HALF = 800, BLOCK_N = (BLOCK_HALF * 2) / BLOCK_CELL;
 
 export class Environment {
   // view: WorldView (gives scene, world, quality, renderer)
@@ -11,27 +23,121 @@ export class Environment {
     this.view = view;
     this.scene = view.scene;
     this.world = view.world;
-    this.quality = view.quality;
-    this.T = makeTextures(view.renderer);
+    this.quality = this.q = view.quality;
+    const first = this.scene.children.length;
+    this.T = makeTextures(view.renderer, this.q);
+    this.worldMap = makeWorldMap();
+    this.blockGrid = new Uint8Array(BLOCK_N * BLOCK_N);
+    this.shadeRects = [];
+    this.paintBatch = new Batch();
+    this.decalBatch = new Batch();
+    this.markBatch = new Batch();
+    this.fenceBatch = new Batch();
+    this.buildMaterials();
+
+    const A = this.track = analyseTrack(this.world);
     this.buildGround();
-    this.buildTrack();
-    this.buildColliders();
-    this.buildScenery();
+    buildTrack(this, A);
+    this.colliders = new ColliderViews(this);
+
+    // one kit per zone: merged meshes stay local, so they are culled per area
+    const cones = [];
+    const kit = new Kit(this);
+    buildGantry(this, kit);
+    buildPits(this, kit);
+    kit.flush();
+    buildGrandstands(this, kit);
+    kit.flush();
+    buildInfield(this, kit, cones);
+    kit.flush();
+    buildDerbyProps(this, kit);
+    kit.flush();
+    buildLabProps(this, kit, cones);
+    kit.flush();
+    buildTrackside(this, A);
+    this.buildCones(cones);
+
+    const TR = makeTerrain();
+    buildTerrain(this, TR);
+    const treePos = buildFlora(this, TR, A);
+    buildPerimeter(this);
+    fillWorldMap(this, treePos);
+    this.flushOverlays();
+    // everything the environment put in the scene (for profiling / teardown)
+    this.objects = this.scene.children.slice(first);
   }
 
-  // per-frame hook for animated scenery (clouds, flags...); camera is the active camera
+  // per-frame hook for animated scenery; camera is the active camera
   update(dt, camera) {}
 
-  mat(map, opts = {}) {
-    return new THREE.MeshStandardMaterial({ map, roughness: 0.92, metalness: 0, ...opts });
+  // ---------------------------------------------------------------- materials
+  buildMaterials() {
+    const T = this.T, hi = this.q !== 'low';
+    const std = (o) => new THREE.MeshStandardMaterial(o);
+    const M = this.M = {};
+    M.paintVC = std({ vertexColors: true, roughness: 0.6, metalness: 0.05 });
+    M.steelVC = std({ vertexColors: true, roughness: 0.4, metalness: 0.7, side: THREE.DoubleSide });
+    M.steel = std({ color: '#aeb4b8', roughness: 0.38, metalness: 0.75 });
+    M.wall = envMaterial({ map: T.wall, normalMap: hi ? T.wallN : null, vertexColors: true, roughness: hi ? 1 : 0.85 },
+      { noise: T.noise, macro: { amp: 0.08, s1: 11, s2: 53 }, roughA: hi });
+    M.belt = envMaterial({ map: T.belt, normalMap: hi ? T.beltN : null, roughness: hi ? 1 : 0.7 },
+      { noise: T.noise, macro: { amp: 0.08, s1: 17, s2: 71 }, roughA: hi });
+    M.rubber = std({ color: '#151617', roughness: 0.86 });
+    M.hazard = std({ map: T.hazard, roughness: 0.55 });
+    M.lamp = std({ color: '#f4f1e4', emissive: '#fff3d6', emissiveIntensity: 0.6, roughness: 0.3 });
+    M.redLamp = std({ color: '#2a0303', emissive: '#ff2a12', emissiveIntensity: 0.35, roughness: 0.2 });
+    M.honeycomb = std({ map: T.honeycomb, roughness: 0.35, metalness: 0.65 });
+    M.deck = envMaterial({ map: T.asphalt, normalMap: hi ? T.asphaltN : null, roughness: hi ? 1 : 0.85, color: '#e4e4e4' },
+      { noise: T.noise, roughA: hi });
+    M.glass = std({ map: T.glass, roughness: 0.06, metalness: 0.1, envMapIntensity: 1.4 });
+    M.door = std({ map: T.door, roughness: 0.45, metalness: 0.5 });
+    M.cladding = std({ map: T.cladding, vertexColors: true, roughness: 0.5, metalness: 0.35 });
+    M.ads = std({ map: T.ads, roughness: 0.5 });
+    M.crowd = std({ map: T.crowd, vertexColors: true, roughness: 0.9 });
+    M.people = std({ vertexColors: true, roughness: 0.85 });
+    M.skin = std({ color: '#c8956e', roughness: 0.8 });
+    M.target = std({ map: T.target, roughness: 0.6, side: THREE.DoubleSide });
+    if (hi) {
+      // leaf cards: alpha tested, two-sided, and keeping the crown normals on back faces
+      M.foliage = std({ map: T.leaves, vertexColors: true, roughness: 0.85, alphaTest: 0.42, side: THREE.DoubleSide, alphaToCoverage: this.q === 'high' });
+      // two-sided cards and blades keep their (outward / upward) normals on back
+      // faces, otherwise half of them would be lit from below and turn black
+      const keepNormals = (m) => {
+        m.onBeforeCompile = (sh) => {
+          sh.fragmentShader = sh.fragmentShader.replace('#include <normal_fragment_begin>', THREE.ShaderChunk.normal_fragment_begin.replace('normal *= faceDirection;', ''));
+        };
+        m.customProgramCacheKey = () => 'keepNormals';
+        return m;
+      };
+      keepNormals(M.foliage);
+      M.foliageFar = envMaterial({ vertexColors: true, roughness: 0.92 }, { haze: HAZE });
+      M.tuft = keepNormals(std({ vertexColors: true, roughness: 0.95, side: THREE.DoubleSide }));
+    } else {
+      M.foliage = new THREE.MeshLambertMaterial({ vertexColors: true });
+      // trees on the hills take the same haze as the terrain under them
+      M.foliageFar = patchMaterial(new THREE.MeshLambertMaterial({ vertexColors: true }), { haze: HAZE });
+      M.tuft = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
+    }
+    M.paint = new THREE.MeshStandardMaterial({ map: T.paint, vertexColors: true, transparent: true, depthWrite: false, roughness: 0.55 });
+    M.decal = new THREE.MeshStandardMaterial({ map: T.decals, vertexColors: true, transparent: true, depthWrite: false, roughness: 0.6 });
+    M.marks = new THREE.MeshStandardMaterial({ color: '#000000', map: T.paint, transparent: true, opacity: 0.3, depthWrite: false, roughness: 0.75 });
+    M.fence = new THREE.MeshStandardMaterial({ map: T.fence, transparent: true, depthWrite: false, side: THREE.DoubleSide, roughness: 0.5, metalness: 0.5 });
+
+    // ground layers
+    const noise = T.noise;
+    this.padMat = groundMaterial({ map: T.asphalt, normalMap: hi ? T.asphaltN : null, normalScale: new THREE.Vector2(0.8, 0.8), roughness: hi ? 1 : 0.86 }, {
+      noise, macro: { amp: 0.13, s1: 41, s2: 173 }, detail: this.q === 'high' ? { scale: 0.29, mix: 0.5 } : null,
+      patches: { scale: 34, thresh: 0.745, dark: 0.16, rough: 1.06 }, cracks: hi ? { scale: 11, width: 0.0016, dark: 0.3, mask: 0.62 } : null, roughA: hi,
+    }, 1);
+    this.labMat = groundMaterial({ map: T.concrete, normalMap: hi ? T.concreteN : null, roughness: hi ? 1 : 0.82 }, {
+      noise, macro: { amp: 0.1, s1: 29, s2: 151 }, patches: { scale: 26, thresh: 0.74, dark: 0.22, rough: 0.75 }, roughA: hi,
+    }, 1);
   }
 
   // Ground layers (grass, pads, road, kerbs, lines) are drawn first, in order, without
   // writing depth, so they can never z-fight however coarse the device's depth buffer is.
   overlay(map, layer, opts = {}) {
-    const m = this.mat(map, { depthWrite: false, ...opts });
-    m.userData.layer = layer;
-    return m;
+    return groundMaterial({ map, roughness: 0.92, ...opts }, { noise: this.T.noise, macro: { amp: 0.1 } }, layer);
   }
 
   addGround(mesh) {
@@ -41,281 +147,229 @@ export class Environment {
     return mesh;
   }
 
+  // ---------------------------------------------------------------- ground
   buildGround() {
-    const { scene, T } = this;
-    T.grass.repeat.set(600, 600);
-    this.addGround(new THREE.Mesh(new THREE.PlaneGeometry(3000, 3000).rotateX(-Math.PI / 2), this.overlay(T.grass, 0)));
+    const { T } = this;
     const z = this.world.zones;
-    const pad = (x, zz, w, l, tex, rep, y = 0.01) => {
-      const t = tex.clone(); t.needsUpdate = true; t.repeat.set(rep[0], rep[1]);
-      const m = new THREE.Mesh(new THREE.PlaneGeometry(w, l).rotateX(-Math.PI / 2), this.overlay(t, 1));
-      m.position.set(x, y, zz);
-      return this.addGround(m);
+    // grass out to where the terrain takes over, as 40 m cells with holes under
+    // the big paved areas (less overdraw)
+    const grass = new Batch();
+    const C = 40, E = 760;
+    const covered = (x0, z0, x1, z1) => {
+      const corners = [[x0, z0], [x1, z0], [x0, z1], [x1, z1]];
+      const inRect = (r) => corners.every(([x, zz]) => Math.abs(x - r.x) <= r.w / 2 && Math.abs(zz - r.z) <= r.l / 2);
+      const inDisc = corners.every(([x, zz]) => Math.hypot(x - z.derby.x, zz - z.derby.z) <= z.derby.r + 2);
+      return inRect(z.infield) || inRect(z.lab) || inDisc;
     };
-    pad(z.infield.x, z.infield.z, z.infield.w, z.infield.l, T.asphalt, [z.infield.w / 12, z.infield.l / 12]);
-    pad(z.lab.x, z.lab.z, z.lab.w, z.lab.l, T.concrete, [z.lab.w / 9, z.lab.l / 7]);
-    pad(-30, -170, 14, 60, T.asphalt, [1.2, 5]);
-    pad(0, -305, 14, 130, T.asphalt, [1.2, 11]);
-    pad(0, 350, 14, 120, T.asphalt, [1.2, 10]);
-    // lab centre line dashes
-    const dash = new THREE.Mesh(new THREE.PlaneGeometry(z.lab.w, 1.2).rotateX(-Math.PI / 2),
-      this.overlay(T.dash, 3, { transparent: true, roughness: 0.8 }));
-    T.dash.rotation = Math.PI / 2;
-    T.dash.repeat.set(1, 40);
-    dash.position.set(z.lab.x, 0.02, z.lab.z + 3.2);
-    this.addGround(dash);
-    const dash2 = dash.clone(); dash2.position.z = z.lab.z - 3.2; this.addGround(dash2);
-    // derby dirt
-    const dirt = new THREE.Mesh(new THREE.CircleGeometry(z.derby.r + 2, 48).rotateX(-Math.PI / 2), this.overlay(T.dirt, 1));
-    dirt.position.set(z.derby.x, 0.012, z.derby.z);
-    this.addGround(dirt);
+    for (let x0 = -E; x0 < E; x0 += C) for (let z0 = -E; z0 < E; z0 += C) {
+      if (covered(x0, z0, x0 + C, z0 + C)) continue;
+      grass.add(new THREE.PlaneGeometry(C, C).rotateX(-Math.PI / 2).translate(x0 + C / 2, 0, z0 + C / 2), null, null, boxUV(T.tile.grass));
+    }
+    this.grassMat = groundMaterial({ map: T.grass, roughness: 0.95 }, grassOptions(this), 0);
+    this.addGround(new THREE.Mesh(grass.build(false), this.grassMat));
+
+    // asphalt infield pad and access roads (one mesh)
+    const pads = new Batch();
+    const plane = (x, zz, w, l) => new THREE.PlaneGeometry(w, l).rotateX(-Math.PI / 2).translate(x, 0, zz);
+    const uvA = boxUV(T.tile.asphalt);
+    pads.add(plane(z.infield.x, z.infield.z, z.infield.w, z.infield.l), null, null, uvA);
+    for (const [x, zz, w, l] of [[-30, -170, 14, 60], [0, -305, 14, 130], [0, 350, 14, 120]]) pads.add(plane(x, zz, w, l), null, null, uvA);
+    const padMesh = this.addGround(new THREE.Mesh(pads.build(false), this.padMat));
+    padMesh.position.y = 0.01;
+    // crash lab concrete
+    const lab = plane(z.lab.x, z.lab.z, z.lab.w, z.lab.l);
+    worldUV(lab, T.tile.concrete);
+    this.addGround(new THREE.Mesh(lab, this.labMat));
+    this.buildDerbyFloor();
   }
 
-  buildTrack() {
-    const { track } = this.world;
-    const pts = track.pts, N = pts.length;
-    const pos = [], uv = [], idx = [];
-    const hw = TRACK_WIDTH / 2;
-    for (let i = 0; i <= N; i++) {
-      const p = pts[i % N];
-      const nx = -p.tz, nz = p.tx;
-      const v = (i === N ? track.length : p.s) / 14;
-      pos.push(p.x - nx * hw, 0.025, p.z - nz * hw, p.x + nx * hw, 0.025, p.z + nz * hw);
-      uv.push(0, v, 1, v);
-      if (i < N) { const a = i * 2; idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3); }
+  // dirt disc on a polar grid; vertex colours carry the rutted wheel tracks
+  buildDerbyFloor() {
+    const d = this.world.zones.derby, hi = this.q !== 'low';
+    const R = d.r + 2, rings = hi ? 110 : 55, segs = hi ? 160 : 96;
+    const P = [d.x, 0.012, d.z], C = [1, 1, 1], U = [d.x / this.T.tile.dirt, d.z / this.T.tile.dirt];
+    const idx = [];
+    const r = rng(9);
+    const wob = Array.from({ length: 8 }, () => [r() * 6.28, 1 + Math.floor(r() * 3), 0.6 + r() * 1.4]);
+    const lanes = [37.5, 31, 24.5, 17, 9];
+    const tile = this.T.tile.dirt;
+    for (let k = 1; k <= rings; k++) {
+      const rad = R * k / rings;
+      for (let s = 0; s < segs; s++) {
+        const a = s / segs * Math.PI * 2;
+        const x = d.x + Math.cos(a) * rad, z = d.z + Math.sin(a) * rad;
+        P.push(x, 0.012, z);
+        U.push(x / tile, z / tile);
+        let v = 1.0;
+        lanes.forEach((L, i) => {
+          const [ph, f, amp] = wob[i];
+          const c = L + Math.sin(a * f + ph) * amp;
+          for (const o of [-0.85, 0.85]) {
+            const t = (rad - c - o) / 0.4;
+            v -= Math.exp(-t * t) * (0.34 - i * 0.03) * (0.6 + 0.4 * Math.sin(a * 7 + i));
+          }
+          const ridge = (rad - c) / 1.6;
+          v += Math.exp(-ridge * ridge) * 0.05;
+        });
+        v *= 1 - Math.max(0, (rad - (R - 5)) / 5) * 0.18; // damp by the wall
+        v *= 1 + Math.max(0, 1 - rad / 10) * 0.08;        // dusty centre
+        C.push(v * 1.02, v, v * 0.97);
+      }
+    }
+    for (let s = 0; s < segs; s++) idx.push(0, 1 + ((s + 1) % segs), 1 + s);
+    for (let k = 1; k < rings; k++) {
+      const a0 = 1 + (k - 1) * segs, a1 = 1 + k * segs;
+      for (let s = 0; s < segs; s++) {
+        const s1 = (s + 1) % segs;
+        idx.push(a0 + s, a0 + s1, a1 + s, a0 + s1, a1 + s1, a1 + s);
+      }
     }
     const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-    g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(U, 2));
+    g.setAttribute('color', new THREE.Float32BufferAttribute(C, 3));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(new Array(P.length).fill(0).map((_, i) => i % 3 === 1 ? 1 : 0), 3));
     g.setIndex(idx);
-    g.computeVertexNormals();
-    this.addGround(new THREE.Mesh(g, this.overlay(this.T.track, 2, { roughness: 0.85 })));
-
-    // kerbs on the inside of tight corners
-    const kp = [], kuv = [], ki = [];
-    let run = null;
-    for (let i = 0; i < N; i++) {
-      const p = pts[i];
-      const tight = Math.abs(p.curv) > 1 / 110;
-      if (tight) {
-        const side = p.curv > 0 ? 1 : -1;
-        const nx = -p.tz * side, nz = p.tx * side;
-        const base = kp.length / 3;
-        kp.push(p.x + nx * hw, 0.04, p.z + nz * hw, p.x + nx * (hw + 1.5), 0.06, p.z + nz * (hw + 1.5));
-        kuv.push(0, p.s / 4, 1, p.s / 4);
-        if (run !== null && run === i - 1) {
-          if (side > 0) ki.push(base - 2, base, base - 1, base - 1, base, base + 1);
-          else ki.push(base - 2, base - 1, base, base - 1, base + 1, base);
-        }
-        run = i;
-      }
+    // fix winding to face up
+    const ix = g.index.array;
+    for (let i = 0; i < ix.length; i += 3) {
+      const ax = P[ix[i] * 3], az = P[ix[i] * 3 + 2];
+      const bx = P[ix[i + 1] * 3] - ax, bz = P[ix[i + 1] * 3 + 2] - az, cx = P[ix[i + 2] * 3] - ax, cz = P[ix[i + 2] * 3 + 2] - az;
+      if (bz * cx - bx * cz < 0) { const t = ix[i + 1]; ix[i + 1] = ix[i + 2]; ix[i + 2] = t; }
     }
-    const kg = new THREE.BufferGeometry();
-    kg.setAttribute('position', new THREE.Float32BufferAttribute(kp, 3));
-    kg.setAttribute('uv', new THREE.Float32BufferAttribute(kuv, 2));
-    kg.setIndex(ki);
-    kg.computeVertexNormals();
-    this.addGround(new THREE.Mesh(kg, this.overlay(this.T.kerb, 3, { side: THREE.DoubleSide })));
-
-    // start/finish line and gantry
-    const s = this.world.spawns.start;
-    const line = new THREE.Mesh(new THREE.PlaneGeometry(TRACK_WIDTH, 1.6).rotateX(-Math.PI / 2), this.overlay(this.T.checker, 4));
-    this.T.checker.repeat.set(8, 1);
-    line.position.set(s.x, 0.035, s.z);
-    line.rotation.y = -s.heading + Math.PI / 2;
-    this.addGround(line);
-    const gantry = new THREE.Group();
-    const steel = new THREE.MeshStandardMaterial({ color: '#d7d9db', metalness: 0.6, roughness: 0.4 });
-    for (const side of [-1, 1]) {
-      const post = new THREE.Mesh(new THREE.BoxGeometry(0.4, 6.5, 0.4), steel);
-      post.position.set(0, 3.25, side * (TRACK_WIDTH / 2 + 1.5));
-      post.castShadow = true;
-      gantry.add(post);
-    }
-    const beam = new THREE.Mesh(new THREE.BoxGeometry(1.2, 1.4, TRACK_WIDTH + 3.4), new THREE.MeshStandardMaterial({ color: '#16181b', roughness: 0.6 }));
-    beam.position.y = 6.2;
-    beam.castShadow = true;
-    gantry.add(beam);
-    gantry.position.set(s.x, 0, s.z);
-    gantry.rotation.y = -s.heading;
-    this.scene.add(gantry);
+    const mat = groundMaterial({ map: this.T.dirt, normalMap: hi ? this.T.dirtN : null, vertexColors: true, roughness: hi ? 1 : 0.95 }, {
+      noise: this.T.noise, macro: { amp: 0.1, s1: 17, s2: 61 }, tint: { a: '#d9c6a8', b: '#ffffff', scale: 60 }, roughA: hi,
+    }, 1);
+    this.addGround(new THREE.Mesh(g, mat));
   }
 
-  buildColliders() {
-    const { T } = this;
-    const mats = {
-      tyres: this.mat(T.tyres, { roughness: 0.95 }),
-      concrete: this.mat(T.barrier, { roughness: 0.9 }),
-      jersey: this.mat(T.barrier, { roughness: 0.9 }),
-      boundary: new THREE.MeshStandardMaterial({ color: '#6b7a5a', roughness: 1 }),
-      ramp: new THREE.MeshStandardMaterial({ color: '#c9c7c0', roughness: 0.85, map: T.concrete }),
-      pole: new THREE.MeshStandardMaterial({ color: '#9da3a8', metalness: 0.7, roughness: 0.35 }),
-      tyrestack: this.mat(T.tyres, { roughness: 0.95 }),
-      obstacle: this.mat(T.barrier, { roughness: 0.85 }),
+  // ---------------------------------------------------------------- paint & decals
+  quad(batch, corners, color, uvs = null) {
+    // corners: 4 x [x, z] in order around the quad
+    const P = [], U = [];
+    for (const [x, z] of corners) P.push(x, 0.035, z);
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute([0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0], 3));
+    if (uvs) g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+    const [a, b, c] = corners;
+    const up = (b[1] - a[1]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[1] - a[1]) > 0;
+    g.setIndex(up ? [0, 1, 2, 0, 2, 3] : [0, 2, 1, 0, 3, 2]);
+    batch.add(g, null, color, uvs ? null : boxUV(this.T.tile.paint));
+  }
+
+  paintLine(x0, z0, x1, z1, w, color, dash = 0, gap = 0, batch = this.paintBatch) {
+    const L = Math.hypot(x1 - x0, z1 - z0);
+    const dx = (x1 - x0) / L, dz = (z1 - z0) / L, nx = -dz * w / 2, nz = dx * w / 2;
+    const seg = (a, b) => this.quad(batch, [[x0 + dx * a - nx, z0 + dz * a - nz], [x0 + dx * b - nx, z0 + dz * b - nz], [x0 + dx * b + nx, z0 + dz * b + nz], [x0 + dx * a + nx, z0 + dz * a + nz]], color);
+    if (!dash) seg(0, L);
+    else for (let s = 0; s < L; s += dash + gap) seg(s, Math.min(L, s + dash));
+  }
+
+  // rectangle w (local x) by l (local z) turned by a three.js yaw; outline > 0 draws only the border
+  paintRect(cx, cz, w, l, yaw, color, outline = 0) {
+    const c = Math.cos(yaw), s = Math.sin(yaw);
+    const P = (u, v) => [cx + u * c + v * s, cz - u * s + v * c];
+    if (!outline) { this.quad(this.paintBatch, [P(-w / 2, -l / 2), P(w / 2, -l / 2), P(w / 2, l / 2), P(-w / 2, l / 2)], color); return; }
+    const o = outline;
+    const corners = [P(-w / 2, -l / 2), P(w / 2, -l / 2), P(w / 2, l / 2), P(-w / 2, l / 2)];
+    for (let k = 0; k < 4; k++) {
+      const [ax, az] = corners[k], [bx, bz] = corners[(k + 1) % 4];
+      this.paintLine(ax, az, bx, bz, o, color);
+    }
+  }
+
+  paintArc(cx, cz, r, w, a0, a1, color, batch = this.paintBatch, wobble = null) {
+    const n = Math.max(8, Math.ceil(Math.abs(a1 - a0) * r / 1.2));
+    for (let k = 0; k < n; k++) {
+      const t0 = a0 + (a1 - a0) * k / n, t1 = a0 + (a1 - a0) * (k + 1) / n;
+      const rr0 = r + (wobble ? wobble(t0) : 0), rr1 = r + (wobble ? wobble(t1) : 0);
+      const p = (t, rr) => [cx + Math.cos(t) * rr, cz + Math.sin(t) * rr];
+      this.quad(batch, [p(t0, rr0 - w / 2), p(t1, rr1 - w / 2), p(t1, rr1 + w / 2), p(t0, rr0 + w / 2)], color);
+    }
+  }
+
+  // dark rubber left by tyres: a pair of wheel tracks along a line or an arc
+  rubberLine(x0, z0, x1, z1, track = 1.6, w = 0.22) {
+    const L = Math.hypot(x1 - x0, z1 - z0), nx = -(z1 - z0) / L * track / 2, nz = (x1 - x0) / L * track / 2;
+    for (const s of [-1, 1]) this.paintLine(x0 + nx * s, z0 + nz * s, x1 + nx * s, z1 + nz * s, w, 0xffffff, 0, 0, this.markBatch);
+  }
+
+  rubberArc(cx, cz, r, a0, a1, seed, track = 1.6, w = 0.22) {
+    const ph = seed * 2.7, amp = 0.4 + (seed % 3) * 0.3;
+    for (const s of [-1, 1]) this.paintArc(cx, cz, r + s * track / 2, w, a0, a1, 0xffffff, this.markBatch, (t) => Math.sin(t * 3 + ph) * amp);
+  }
+
+  // decal from the atlas: w along the reader's right, l along heading (text up)
+  decal(name, cx, cz, w, l, heading, color) {
+    const R = DECALS[name];
+    if (!R) return;
+    const fx = Math.cos(heading), fz = Math.sin(heading), rx = -fz, rz = fx;
+    const p = (u, v) => [cx + rx * (u - 0.5) * w + fx * (v - 0.5) * l, cz + rz * (u - 0.5) * w + fz * (v - 0.5) * l];
+    this.quad(this.decalBatch, [p(0, 0), p(1, 0), p(1, 1), p(0, 1)], color, [R[0], R[1], R[2], R[1], R[2], R[3], R[0], R[3]]);
+  }
+
+  fenceStrip(x0, z0, x1, z1, y0, h) {
+    const L = Math.hypot(x1 - x0, z1 - z0), t = this.T.tile.fence;
+    const g = new THREE.PlaneGeometry(L, h);
+    const uv = g.attributes.uv;
+    for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * L / t, uv.getY(i) * h / t);
+    this.fenceBatch.add(g, trs((x0 + x1) / 2, y0 + h / 2, (z0 + z1) / 2, -Math.atan2(z1 - z0, x1 - x0)));
+  }
+
+  flushOverlays() {
+    const add = (batch, mat, layer) => {
+      if (batch.empty) return;
+      const m = new THREE.Mesh(batch.build(true), mat);
+      m.renderOrder = -10 + layer;
+      m.receiveShadow = true;
+      this.scene.add(m);
     };
-    this.colliderMats = mats;
-    this.colliderMeshes = new Map();
-    for (const c of this.world.colliders) this.addColliderMesh(c);
+    add(this.markBatch, this.M.marks, 4.8);
+    add(this.paintBatch, this.M.paint, 5);
+    add(this.decalBatch, this.M.decal, 5.5);
+    if (!this.fenceBatch.empty) this.scene.add(new THREE.Mesh(this.fenceBatch.build(false), this.M.fence));
   }
 
-  addColliderMesh(c) {
-    const mats = this.colliderMats;
-    let mesh;
-    if (c.type === 'box' && c.ramp) {
-      mesh = rampMesh(c.ramp, mats.ramp, this.T);
-    } else if (c.type === 'box') {
-      const g = new THREE.BoxGeometry(c.hx * 2, c.hy * 2, c.hz * 2);
-      if (c.tag === 'tyres' || c.tag === 'concrete' || c.tag === 'jersey' || c.tag === 'obstacle') {
-        // stretch the texture along the long axis
-        const uvA = g.attributes.uv;
-        const along = Math.max(c.hx, c.hz) * 2;
-        for (let i = 0; i < uvA.count; i++) uvA.setX(i, uvA.getX(i) * along / (c.tag === 'tyres' ? 4 : 6));
-      }
-      mesh = new THREE.Mesh(g, mats[c.tag] || mats.concrete);
-      const R = c.R;
-      const m = new THREE.Matrix4().set(R[0], R[1], R[2], c.cx, R[3], R[4], R[5], c.cy, R[6], R[7], R[8], c.cz, 0, 0, 0, 1);
-      mesh.matrixAutoUpdate = false;
-      mesh.matrix.copy(m);
-      if (c.tag === 'boundary') mesh.visible = false;
-    } else if (c.type === 'cyl') {
-      if (c.tag === 'pole') {
-        mesh = new THREE.Group();
-        const shaft = new THREE.Mesh(new THREE.CylinderGeometry(c.radius * 0.8, c.radius, c.y1, 12), mats.pole);
-        shaft.position.y = c.y1 / 2;
-        shaft.castShadow = true;
-        const arm = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.12, 0.18), mats.pole);
-        arm.position.set(0.8, c.y1 - 0.1, 0);
-        const lamp = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.18, 0.35), new THREE.MeshStandardMaterial({ color: '#f5f2df', emissive: '#6b6750' }));
-        lamp.position.set(1.6, c.y1 - 0.2, 0);
-        mesh.add(shaft, arm, lamp);
-        mesh.position.set(c.cx, 0, c.cz);
-      } else {
-        const g = new THREE.CylinderGeometry(c.radius, c.radius, c.y1 - c.y0, 20);
-        mesh = new THREE.Mesh(g, mats[c.tag] || mats.tyrestack);
-        mesh.position.set(c.cx, (c.y0 + c.y1) / 2, c.cz);
-      }
-    }
-    if (!mesh) return;
-    mesh.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
-    this.scene.add(mesh);
-    this.colliderMeshes.set(c.id, mesh);
-    return mesh;
+  buildCones(list) {
+    if (!list.length) return;
+    const r = rng(4);
+    const items = list.map(([x, z]) => ({ m: trs(x, 0, z, r() * 6.28) }));
+    this.instances(coneGeometry(), this.M.paintVC, items, 400, { castShadow: this.q !== 'low' });
   }
 
-  removeColliderMesh(c) {
-    const m = this.colliderMeshes.get(c.id);
-    if (m) { this.scene.remove(m); this.colliderMeshes.delete(c.id); }
+  // ---------------------------------------------------------------- placement helpers
+  instances(geo, mat, items, cell, opts) {
+    const r = chunkedInstances(geo, mat, items, cell, opts);
+    this.scene.add(r.group);
+    return r;
   }
 
-  buildScenery() {
-    const { world } = this;
-    // trees scattered away from paved areas
-    const trunkG = new THREE.CylinderGeometry(0.18, 0.28, 2.4, 6).translate(0, 1.2, 0);
-    const crownG = new THREE.ConeGeometry(2.0, 5.5, 7).translate(0, 4.6, 0);
-    const count = this.quality === 'low' ? 220 : 520;
-    const trunks = new THREE.InstancedMesh(trunkG, new THREE.MeshStandardMaterial({ color: '#4a3826', roughness: 1 }), count);
-    const crowns = new THREE.InstancedMesh(crownG, new THREE.MeshStandardMaterial({ color: '#2f4a28', roughness: 1 }), count);
-    let s = 12345;
-    const r = () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
-    const m = new THREE.Matrix4();
-    let placed = 0, guard = 0;
-    while (placed < count && guard++ < 20000) {
-      const x = (r() - 0.5) * 1380, z = (r() - 0.5) * 1380;
-      if (world.surfaceAt(x, z).type !== 'grass') continue;
-      if (nearTrack(world.track, x, z, 26)) continue;
-      if (Math.hypot(x - world.zones.derby.x, z - world.zones.derby.z) < world.zones.derby.r + 14) continue;
-      if (Math.abs(z - world.zones.lab.z) < 40 && Math.abs(x) < 200) continue;
-      if (Math.abs(x - world.zones.infield.x) < 125 && Math.abs(z - world.zones.infield.z) < 135) continue;
-      const sc = 0.7 + r() * 0.8;
-      m.compose(new THREE.Vector3(x, 0, z), new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), r() * 6), new THREE.Vector3(sc, sc * (0.8 + r() * 0.5), sc));
-      trunks.setMatrixAt(placed, m);
-      crowns.setMatrixAt(placed, m);
-      placed++;
-    }
-    trunks.count = crowns.count = placed;
-    crowns.castShadow = true;
-    this.scene.add(trunks, crowns);
+  block(x, z, rad) { this.blockRect(x - rad, z - rad, x + rad, z + rad); }
 
-    // distant hills: broad, low, tinted toward the sky so they read as distance
-    const hills = new THREE.Group();
-    const hm = new THREE.MeshLambertMaterial({ color: '#6f8a7c', flatShading: true, fog: false });
-    const hm2 = new THREE.MeshLambertMaterial({ color: '#8ea3a6', flatShading: true, fog: false });
-    for (let k = 0; k < 34; k++) {
-      const a = (k / 34) * Math.PI * 2 + r() * 0.12;
-      const far = k % 2 === 0;
-      const rad = far ? 1250 + r() * 120 : 1000 + r() * 120;
-      const h = far ? 110 + r() * 120 : 50 + r() * 60;
-      const hill = new THREE.Mesh(new THREE.SphereGeometry(1, 9, 5, 0, Math.PI * 2, 0, Math.PI / 2), far ? hm2 : hm);
-      hill.scale.set(220 + r() * 160, h, 160 + r() * 120);
-      hill.rotation.y = -a;
-      hill.position.set(Math.cos(a) * rad, -4, Math.sin(a) * rad);
-      hills.add(hill);
-    }
-    this.scene.add(hills);
-
-    // grandstand by the start line
-    const st = world.spawns.start;
-    const stand = new THREE.Group();
-    const standMat = new THREE.MeshStandardMaterial({ color: '#b9bcc0', roughness: 0.8 });
-    const seatMat = new THREE.MeshStandardMaterial({ color: '#2b4f7e', roughness: 0.7 });
-    for (let k = 0; k < 6; k++) {
-      const step = new THREE.Mesh(new THREE.BoxGeometry(40, 0.8, 1.6), k % 2 ? seatMat : standMat);
-      step.position.set(0, 0.4 + k * 0.8, k * 1.6);
-      step.castShadow = step.receiveShadow = true;
-      stand.add(step);
-    }
-    const roof = new THREE.Mesh(new THREE.BoxGeometry(42, 0.3, 11), standMat);
-    roof.position.set(0, 8.5, 4);
-    roof.castShadow = true;
-    stand.add(roof);
-    stand.position.set(st.x + Math.sin(st.heading) * 22, 0, st.z - Math.cos(st.heading) * 22);
-    stand.rotation.y = -st.heading + Math.PI;
-    this.scene.add(stand);
-
-    // crash lab target boards and light rig
-    const lab = world.zones.lab;
-    const board = new THREE.Mesh(new THREE.PlaneGeometry(4, 4), new THREE.MeshStandardMaterial({ map: this.T.target, roughness: 0.6 }));
-    board.position.set(lab.x + 120, 3, lab.z - lab.l / 2 + 1);
-    this.scene.add(board);
-    const board2 = board.clone();
-    board2.position.set(lab.x + 120, 3, lab.z + lab.l / 2 - 1);
-    board2.rotation.y = Math.PI;
-    this.scene.add(board2);
+  blockRect(x0, z0, x1, z1) {
+    const c = (v) => Math.max(0, Math.min(BLOCK_N - 1, Math.floor((v + BLOCK_HALF) / BLOCK_CELL)));
+    for (let j = c(Math.min(z0, z1)); j <= c(Math.max(z0, z1)); j++)
+      for (let i = c(Math.min(x0, x1)); i <= c(Math.max(x0, x1)); i++) this.blockGrid[j * BLOCK_N + i] = 1;
   }
+
+  blocked(x, z, rad = 0) {
+    const c = (v) => Math.floor((v + BLOCK_HALF) / BLOCK_CELL);
+    const i0 = c(x - rad), i1 = c(x + rad), j0 = c(z - rad), j1 = c(z + rad);
+    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+      if (i < 0 || j < 0 || i >= BLOCK_N || j >= BLOCK_N) continue;
+      if (this.blockGrid[j * BLOCK_N + i]) return true;
+    }
+    return false;
+  }
+
+  // ---------------------------------------------------------------- colliders
+  addColliderMesh(c) { return this.colliders.add(c); }
+  removeColliderMesh(c) { this.colliders.remove(c); }
 }
 
-function nearTrack(track, x, z, d) {
-  const pts = track.pts;
-  for (let i = 0; i < pts.length; i += 3) if ((pts[i].x - x) ** 2 + (pts[i].z - z) ** 2 < d * d) return true;
-  return false;
-}
-
-function rampMesh(r, mat, T) {
-  // wedge: top face rises from ground at the start to `height` at the end
-  const L = r.run, W = r.width / 2, H = r.height;
-  const v = [
-    0, 0, -W, L, H, -W, L, 0, -W,
-    0, 0, W, L, 0, W, L, H, W,
-    0, 0, -W, 0, 0, W, L, H, W, 0, 0, -W, L, H, W, L, H, -W,
-    L, 0, -W, L, H, -W, L, H, W, L, 0, -W, L, H, W, L, 0, W,
-  ];
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
-  const uv = [];
-  for (let i = 0; i < v.length / 3; i++) uv.push(v[i * 3] / 4, v[i * 3 + 2] / 4);
-  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
-  g.computeVertexNormals();
-  const m = new THREE.Mesh(g, [mat][0]);
-  m.material = mat.clone();
-  m.material.side = THREE.DoubleSide;
-  const grp = new THREE.Group();
-  grp.add(m);
-  // hazard stripe on the lip
-  const lip = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.06, r.width), new THREE.MeshStandardMaterial({ map: T.barrier, roughness: 0.8 }));
-  lip.position.set(L - 0.15, H + 0.02, 0);
-  lip.rotation.z = r.deg * Math.PI / 180;
-  grp.add(lip);
-  grp.position.set(r.x, 0, r.z);
-  grp.rotation.y = -r.heading;
-  return grp;
+// uvs = world x/z over tile size (for geometry already in world position)
+function worldUV(g, tile) {
+  const p = g.attributes.position, uv = g.attributes.uv;
+  for (let i = 0; i < p.count; i++) uv.setXY(i, p.getX(i) / tile, p.getZ(i) / tile);
 }
