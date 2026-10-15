@@ -303,7 +303,8 @@ function buildGreenhouse(B, S) {
   const soft = !!g.soft;
   const xm = (rf.xf + rf.xr) / 2, hl = (rf.xf - rf.xr) / 2;
   const drop = rf.drop ?? 0.02;
-  const roofY = (x, z) => H - (H - rf.edge) * (z / rf.z) ** 2 - drop * ((x - xm) / hl) ** 2;
+  // optional rearDrop: the roof falls away behind its middle (fabric top over the bows)
+  const roofY = (x, z) => H - (H - rf.edge) * (z / rf.z) ** 2 - drop * ((x - xm) / hl) ** 2 - (rf.rearDrop || 0) * Math.max(0, (xm - x) / hl) ** 2;
   const zA = S.beltAt(g.xA)[0], zC = S.beltAt(g.xC)[0];
   const baseFront = f => { const x = g.cowl + (g.xA - g.cowl) * f * f, z = zA * f; return [x, S.topAt(x, z) + 0.003, z]; };
   const topFront = f => { const x = rf.xfc + (rf.xf - rf.xfc) * f * f, z = rf.z * f; return [x, roofY(x, z), z]; };

@@ -120,7 +120,28 @@ float czNoise(vec3 x) {
   return mix(mix(mix(czHash(i), czHash(i + vec3(1, 0, 0)), f.x), mix(czHash(i + vec3(0, 1, 0)), czHash(i + vec3(1, 1, 0)), f.x), f.y),
              mix(mix(czHash(i + vec3(0, 0, 1)), czHash(i + vec3(1, 0, 1)), f.x), mix(czHash(i + vec3(0, 1, 1)), czHash(i + vec3(1, 1, 1)), f.x), f.y), f.z);
 }`;
+// Specular occlusion toward the ground: the lower body mostly reflects its own shadowed
+// underside and the dark road, not the bright lit ground of the environment map. Darkening
+// reflections that point below the horizon gives painted panels the photographic
+// "horizon line" along the shoulder and keeps the sills from looking chalky.
+const HORIZON_SO = `
+#if defined( USE_ENVMAP ) && defined( RE_IndirectSpecular )
+  {
+    vec3 czRw = inverseTransformDirection( reflect( -geometryViewDir, geometryNormal ), viewMatrix );
+    float czSO = mix( 0.3, 1.0, smoothstep( -0.24, 0.05, czRw.y ) );
+    radiance *= czSO;
+    #ifdef USE_CLEARCOAT
+      vec3 czRc = inverseTransformDirection( reflect( -geometryViewDir, geometryClearcoatNormal ), viewMatrix );
+      clearcoatRadiance *= mix( 0.3, 1.0, smoothstep( -0.24, 0.05, czRc.y ) );
+    #endif
+  }
+#endif`;
+function horizonSO(sh) {
+  sh.fragmentShader = sh.fragmentShader.replace('#include <lights_fragment_maps>', '#include <lights_fragment_maps>' + HORIZON_SO);
+}
+
 function paintDamageHi(sh) {
+  horizonSO(sh);
   sh.vertexShader = sh.vertexShader
     .replace('#include <common>', '#include <common>\nattribute float damage;\nvarying float vDamage;\nvarying vec3 vCarPos;')
     .replace('#include <begin_vertex>', '#include <begin_vertex>\nvDamage = damage;\nvCarPos = position;');
@@ -145,6 +166,7 @@ function paintDamageHi(sh) {
       #endif`);
 }
 function paintDamageLo(sh) {
+  horizonSO(sh);
   sh.vertexShader = sh.vertexShader
     .replace('#include <common>', '#include <common>\nattribute float damage;\nvarying float vDamage;\nvarying float vCarY;')
     .replace('#include <begin_vertex>', '#include <begin_vertex>\nvDamage = damage;\nvCarY = position.y;');
@@ -157,12 +179,18 @@ function paintDamageLo(sh) {
       roughnessFactor = mix(roughnessFactor, 0.7, czD);`);
 }
 
-// tinted glass: see-through head-on, mirror-like at grazing angles
+// tinted glass: see-through head-on, mirror-like at grazing angles. Written as
+// premultiplied alpha so the reflection is added on top of what shows through instead of
+// being scaled down by the opacity like ordinary alpha blending would (real glass
+// reflects the sky at full strength however dark the tint is).
 function glassFresnel(sh) {
-  sh.fragmentShader = sh.fragmentShader.replace('#include <opaque_fragment>', `
-    float czF = 1.0 - saturate(dot(normalize(vViewPosition), normal));
-    diffuseColor.a = mix(diffuseColor.a, 1.0, czF * czF * czF);
-    #include <opaque_fragment>`);
+  horizonSO(sh);
+  sh.fragmentShader = sh.fragmentShader
+    .replace('#include <opaque_fragment>', `
+    float czF = 1.0 - saturate( dot( normalize( vViewPosition ), normal ) );
+    float czA = mix( diffuseColor.a, 1.0, czF * czF * czF );
+    gl_FragColor = vec4( totalDiffuse * czA + totalSpecular, czA );`)
+    .replace('#include <premultiplied_alpha_fragment>', '');
 }
 
 const shared = new Map();
@@ -182,9 +210,12 @@ function sharedMaterials(quality) {
   s.head = new M({ color: '#ffffff', roughness: 0.2, emissive: '#eef4ff', emissiveIntensity: 2.6 });
   s.plate = new M({ map: plateTexture(), roughness: 0.42, metalness: 0.05 });
   s.glass = hi
-    ? new P({ color: '#0a0f13', roughness: 0.02, metalness: 0, transparent: true, opacity: 0.62, envMapIntensity: 1.6, depthWrite: false })
+    // double-sided on high: the far windows are seen from inside the cabin, so the view
+    // through the car passes two tinted panes as it does in reality (one extra draw per car)
+    ? new P({ color: '#0b1115', roughness: 0.015, metalness: 0, ior: 1.65, transparent: true, premultipliedAlpha: true, opacity: 0.74, envMapIntensity: 1.25, depthWrite: false, side: quality === 'high' ? THREE.DoubleSide : THREE.FrontSide })
     : new M({ color: '#0d1317', roughness: 0.06, metalness: 0.3, envMapIntensity: 1.4 });
-  if (hi) s.glass.onBeforeCompile = glassFresnel;
+  s.glass.onBeforeCompile = hi ? glassFresnel : horizonSO;
+  s.trim.onBeforeCompile = horizonSO;
   s.cracked = new M({ map: crackTexture(), color: '#e3e8ec', roughness: 0.5, metalness: 0.05 });
   if (!hi) { s.plastic = s.trim; s.interior = s.trim; s.lamp = s.chrome; s.soft.roughness = 0.9; s.soft.color.set('#2a2a2c'); }
   shared.set(quality, s);

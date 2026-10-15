@@ -28,7 +28,10 @@ function getMesh(spec, tpl, lod) {
   return meshCache.get(key);
 }
 
-export function makeWheelMesh(spec, quality = 'high') {
+// Loose wheels (effects.js) call makeWheelMesh(spec) without a tier, so they follow the
+// tier the cars were built with: phones get the cheap wheel there too.
+let lastQuality = 'high';
+export function makeWheelMesh(spec, quality = lastQuality) {
   return buildWheel(spec, quality);
 }
 
@@ -84,7 +87,7 @@ const _m = new THREE.Matrix4(), _f = new THREE.Vector3(), _u = new THREE.Vector3
 export class CarView {
   constructor(scene, vehicle, quality = 'high') {
     this.scene = scene;
-    this.quality = quality;
+    this.quality = lastQuality = quality;
     this.vehicle = vehicle;
     const spec = vehicle.spec, tpl = vehicle.tpl;
     const src = this.src = getMesh(spec, tpl, quality === 'low' ? 'low' : 'high');
