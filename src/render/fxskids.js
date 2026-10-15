@@ -151,7 +151,10 @@ export class SkidMarks {
     r.kind = this.surfaceKind(x, z, r);
     const rut = r.kind > 0;
     const yy = y + 0.02;
-    const target = rut ? Math.min(1, 0.3 + intensity * 1.4) : Math.min(0.85, 0.25 + intensity * 0.8);
+    // ramps to nothing near the threshold so marks fade in and out with the slip
+    // instead of starting and stopping at a third of full strength
+    const ramp = Math.min(1, (intensity - 0.05) * 5);
+    const target = ramp * (rut ? Math.min(1, 0.3 + intensity * 1.4) : Math.min(0.85, 0.25 + intensity * 0.8));
     if (!r.on || (r.x - x) ** 2 + (r.z - z) ** 2 > 4) {
       // start a new ribbon; its first edge is placed once the direction of travel is known
       r.on = true; r.fresh = true; r.x = x; r.z = z; r.y = yy;
