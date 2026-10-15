@@ -11,6 +11,10 @@ const HW = TRACK_WIDTH / 2;
 const SHIRTS = ['#1b1c1e', '#232427', '#2c2d30', '#e4e4df', '#d6d6d0', '#8d9093', '#5c6066', '#2b3a55', '#3b4f6e', '#4a5d7a',
   '#26324a', '#6b3a2a', '#8f1d1d', '#b02a24', '#c8a43a', '#2f5d3a', '#d06a1e', '#1f4f9a', '#5a4632', '#c9c2b0'];
 const lin = (hex) => { const c = new THREE.Color(hex); return [c.r, c.g, c.b]; };
+// Soffits (roof undersides) only see the grass-green bounce light and ground
+// reflections, which tinted pale roofs olive; a cool grey albedo compensates.
+const SOFFIT = [0.4, 0.3, 0.58];
+const soffit = (w, d) => new THREE.PlaneGeometry(w, d).rotateX(Math.PI / 2);
 
 // multi-material batch: one merged mesh per material key
 export class Kit {
@@ -182,6 +186,7 @@ export function buildPits(env, kit) {
     for (let x = xa; x <= xb; x += 6) kit.box('steel', x, 5.15, G + 0.1, 0.06, 1.05, 0.06);
     // roof slab with a canopy over the pit lane
     kit.box('paintVC', cx, 8.75, (G + BZ) / 2 - 1.5, W + 1, 0.45, D + 4, lin('#d4d5d2'));
+    kit.add('paintVC', soffit(W + 0.96, D + 3.96).translate(cx, 8.745, (G + BZ) / 2 - 1.5), null, SOFFIT);
     kit.box('paintVC', cx, 9.2, BZ - 0.4, W + 1, 0.6, 0.6, lin('#d4d5d2'));
     for (let x = xa + 1; x < xb; x += 12) kit.box('steel', x, 0, G - 2.9, 0.2, 8.75, 0.2);
     // rooftop plant
@@ -289,7 +294,9 @@ export function buildGrandstands(env, kit) {
     }
     const roof = new THREE.BoxGeometry(W + 1, 0.22, zb - zf + 1.2);
     const tilt = new THREE.Matrix4().makeRotationX(0.07);
-    kit.add('cladding', roof, m.clone().multiply(trs(0, roofY - 0.05, (zb + zf) / 2).multiply(tilt)), [0.85, 0.86, 0.88], boxUV(3));
+    const roofM = m.clone().multiply(trs(0, roofY - 0.05, (zb + zf) / 2).multiply(tilt));
+    kit.add('cladding', roof, roofM, [0.85, 0.86, 0.88], boxUV(3));
+    kit.add('paintVC', soffit(W + 0.96, zb - zf + 1.16).translate(0, -0.115, 0), roofM, SOFFIT);
     env.blockRect(xa - 2, front - depth - 4, xb + 2, front + 2);
     env.shadeRects.push([cx, front - depth / 2, W + 4, depth + 6, 0.65]);
   }

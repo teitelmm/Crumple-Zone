@@ -87,7 +87,7 @@ export class Environment {
     M.lamp = std({ color: '#f4f1e4', emissive: '#fff3d6', emissiveIntensity: 0.6, roughness: 0.3 });
     M.redLamp = std({ color: '#2a0303', emissive: '#ff2a12', emissiveIntensity: 0.35, roughness: 0.2 });
     M.honeycomb = std({ map: T.honeycomb, roughness: 0.35, metalness: 0.65 });
-    M.deck = envMaterial({ map: T.asphalt, normalMap: hi ? T.asphaltN : null, roughness: hi ? 1 : 0.85, color: '#a8a8a8' },
+    M.deck = envMaterial({ map: T.asphalt, normalMap: hi ? T.asphaltN : null, roughness: hi ? 1 : 0.85, color: '#e4e4e4' },
       { noise: T.noise, roughA: hi });
     M.glass = std({ map: T.glass, roughness: 0.06, metalness: 0.1, envMapIntensity: 1.4 });
     M.door = std({ map: T.door, roughness: 0.45, metalness: 0.5 });
