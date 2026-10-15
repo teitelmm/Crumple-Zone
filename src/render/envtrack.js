@@ -4,7 +4,7 @@
 import * as THREE from 'three';
 import { TRACK_WIDTH } from '../world/map.js';
 import { groundMaterial } from './envshader.js';
-import { sweep, Batch, trs, rng } from './envgeom.js';
+import { sweep, Batch, BucketBatch, trs, rng } from './envgeom.js';
 
 const HW = TRACK_WIDTH / 2;
 
@@ -103,7 +103,7 @@ export function buildTrack(env, A) {
     normalMap: hiQ ? T.asphaltN : null, normalScale: new THREE.Vector2(0.7, 0.7),
   }, {
     noise: T.noise, macro: { amp: 0.1, s1: 37, s2: 211 }, detail: env.q === 'high' ? { scale: 0.29, mix: 0.45 } : null,
-    patches: { scale: 60, thresh: 0.78, dark: 0.12, rough: 0.9 }, cracks: hiQ ? { scale: 17, width: 0.004, dark: 0.55, mask: 0.6 } : null,
+    patches: { scale: 60, thresh: 0.78, dark: 0.2, rough: 1.08 }, cracks: hiQ ? { scale: 17, width: 0.0018, dark: 0.4, mask: 0.64 } : null,
     roughA: hiQ, track: { hw: HW, sigma: 1.6, rubber: 0.34, dust: 0.3 },
   }, 2);
   if (!hiQ) mat.roughness = 0.88;
@@ -226,7 +226,7 @@ export function buildTrackside(env, A) {
   const { pts, N, tyreCorner } = A;
   const hiQ = env.q !== 'low';
   const r = rng(31);
-  const steelKit = new Batch(); // galvanised metal, vertex coloured
+  const steelKit = new BucketBatch(300); // galvanised metal, vertex coloured
   const startX = 115;
   const onStartStraight = (p) => Math.abs(p.x) < startX && p.z < -222;
 
@@ -255,7 +255,8 @@ export function buildTrackside(env, A) {
       s += 2;
       if ((i - run.start) % 2 === 0) posts.push(trs(x - p.tz * 0.12, 0, z + p.tx * 0.12, -p.heading));
     }
-    steelKit.add(sweep(path, rail, { tileV: 4, flip: true }), null, [0.78, 0.8, 0.82]);
+    const mid = path[path.length >> 1];
+    steelKit.add(mid.x, mid.z, sweep(path, rail, { tileV: 4, flip: true }), null, [0.78, 0.8, 0.82]);
   }
 
   // ---- catch fences behind tyre walls and along the start straight (spectator side)
@@ -305,7 +306,8 @@ export function buildTrackside(env, A) {
     // top and middle tension rails
     const path = top.map(q => ({ x: q.x, z: q.z, nx: -q.p.tz, nz: q.p.tx, s: q.s }));
     const tube = [[0, -0.03], [0.03, 0], [0, 0.03], [-0.03, 0], [0, -0.03]].map(([o, h], k) => [o, h, k / 4]);
-    steelKit.add(sweep(path, tube, { y: fr.h, tileV: 4 }), null, [0.7, 0.72, 0.74]);
+    const mid = path[path.length >> 1];
+    steelKit.add(mid.x, mid.z, sweep(path, tube, { y: fr.h, tileV: 4 }), null, [0.7, 0.72, 0.74]);
   }
   if (!fenceBatch.empty) {
     const fm = new THREE.MeshStandardMaterial({ map: env.T.fence, transparent: true, depthWrite: false, side: THREE.DoubleSide, roughness: 0.5, metalness: 0.5, alphaTest: 0.02 });
@@ -315,8 +317,7 @@ export function buildTrackside(env, A) {
 
   // posts (armco + fence) as one instanced set
   if (posts.length) env.instances(postGeo, env.M.steel, posts.map(m => ({ m })), 500, { castShadow: hiQ });
-  if (!steelKit.empty) {
-    const m = new THREE.Mesh(steelKit.build(), env.M.steelVC);
+  for (const m of steelKit.meshes(env.M.steelVC)) {
     m.castShadow = hiQ; m.receiveShadow = true;
     env.scene.add(m);
   }

@@ -101,18 +101,18 @@ export class ColliderViews {
       }
     }
     // instanced tyres and belts
-    const mk = (geo, mat, list, cell) => {
+    const mk = (geo, mat, list, cell, cast) => {
       if (!list.length) return;
-      const r = chunkedInstances(geo, mat, list, cell, { castShadow: this.hiQ });
+      const r = chunkedInstances(geo, mat, list, cell, { castShadow: cast && this.hiQ });
       env.scene.add(r.group);
       list.forEach((it, i) => {
         if (!ranges.has(it.id)) ranges.set(it.id, []);
         ranges.get(it.id).push(() => hideInstance(r.slots[i]));
       });
     };
-    mk(this.ringGeo, this.mats.rubber, inst.ring, 250);
-    mk(this.stackGeo, this.mats.rubber, inst.stack, 400);
-    if (inst.belt.length) mk(inst.beltGeo, this.mats.belt, inst.belt, 300);
+    mk(this.ringGeo, this.mats.rubber, inst.ring, 250, false);
+    mk(this.stackGeo, this.mats.rubber, inst.stack, 400, false);
+    if (inst.belt.length) mk(inst.beltGeo, this.mats.belt, inst.belt, 300, true);
     for (const [id, fns] of ranges) this.items.set(id, { hide: () => fns.forEach(f => f()) });
   }
 

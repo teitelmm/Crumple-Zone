@@ -185,6 +185,12 @@ function normalRGBA(Hh, W, H, strength, R) {
   return out;
 }
 
+// normal maps are skipped entirely on the low tier (its materials don't use them)
+let NORMALS = true;
+function nmap(Hh, W, H, strength, R, aniso) {
+  return NORMALS ? dtex(normalRGBA(Hh, W, H, strength, R), W, H, aniso) : null;
+}
+
 function dtex(data, W, H, aniso, srgb = false, wrap = true) {
   const t = new THREE.DataTexture(data, W, H, THREE.RGBAFormat, THREE.UnsignedByteType);
   t.wrapS = t.wrapT = wrap ? THREE.RepeatWrapping : THREE.ClampToEdgeWrapping;
@@ -315,7 +321,7 @@ function asphaltMaps(S, aniso, seed, base) {
   });
   return {
     map: dtex(packRGB(col, S, S), S, S, aniso, true),
-    normal: dtex(normalRGBA(H, S, S, 1.1, R), S, S, aniso),
+    normal: nmap(H, S, S, 1.1, R, aniso),
   };
 }
 
@@ -361,7 +367,7 @@ function concreteMaps(S, aniso, slabs) {
   });
   return {
     map: dtex(packRGB(col, S, S), S, S, aniso, true),
-    normal: dtex(normalRGBA(H, S, S, 1.6, R), S, S, aniso),
+    normal: nmap(H, S, S, 1.6, R, aniso),
   };
 }
 
@@ -395,7 +401,7 @@ function dirtMaps(S, aniso) {
   }
   return {
     map: dtex(packRGB(col, S, S), S, S, aniso, true),
-    normal: dtex(normalRGBA(H, S, S, 2.2, R), S, S, aniso),
+    normal: nmap(H, S, S, 2.2, R, aniso),
   };
 }
 
@@ -417,7 +423,7 @@ function gravelMaps(S, aniso) {
   }
   return {
     map: dtex(packRGB(col, S, S), S, S, aniso, true),
-    normal: dtex(normalRGBA(H, S, S, 2.0, R), S, S, aniso),
+    normal: nmap(H, S, S, 2.0, R, aniso),
   };
 }
 
@@ -484,7 +490,7 @@ function beltMaps(aniso) {
       col[i * 3] = col[i * 3 + 1] = col[i * 3 + 2] = 0.55; Hh[i] = 1.2; R[i] = 0.4;
     }
   }
-  return { map: dtex(packRGB(col, W, H), W, H, aniso, true), normal: dtex(normalRGBA(Hh, W, H, 1.5, R), W, H, aniso) };
+  return { map: dtex(packRGB(col, W, H), W, H, aniso, true), normal: nmap(Hh, W, H, 1.5, R, aniso) };
 }
 
 // cast-in-place concrete wall: u along, v up from the ground, 4 m x 4 m per tile
@@ -528,7 +534,7 @@ function wallMaps(aniso) {
       col[i * 3] *= 0.5; col[i * 3 + 1] *= 0.5; col[i * 3 + 2] *= 0.5; H[i] = -1;
     }
   }
-  return { map: dtex(packRGB(col, S, S), S, S, aniso, true), normal: dtex(normalRGBA(H, S, S, 1.4, R), S, S, aniso) };
+  return { map: dtex(packRGB(col, S, S), S, S, aniso, true), normal: nmap(H, S, S, 1.4, R, aniso) };
 }
 
 // shared linear noise: R,G,B = fbm at increasing frequency, A = high-frequency
@@ -771,7 +777,7 @@ function crowdTex(aniso) {
   const [c, ctx] = canvas(512, 128);
   ctx.fillStyle = '#23272c'; ctx.fillRect(0, 0, 512, 128);
   const r = rng(9);
-  const shirts = ['#d8d8d4', '#c23b2c', '#2d5aa8', '#e8c33a', '#2f2f33', '#5f8f4a', '#f08a2c', '#7a4fa0', '#e0e0e0', '#1f3f6f'];
+  const shirts = ['#b9b9b4', '#8f2d24', '#2a4f8a', '#b89a35', '#2a2a2e', '#4d6e3d', '#b8692a', '#3b3b40', '#d0d0cc', '#1d2d4a', '#5a5a5e', '#1a1a1c'];
   for (let row = 0; row < 8; row++) for (let x = 2; x < 512; x += 7 + r() * 4) {
     if (r() < 0.22) continue;
     const y = row * 16 + 3;
@@ -787,6 +793,7 @@ export function makeTextures(renderer, quality = 'high') {
   const maxA = renderer?.capabilities?.getMaxAnisotropy?.() || 4;
   const aniso = Math.min(maxA, quality === 'high' ? 8 : 4);
   const big = quality === 'high' ? 1024 : 512;
+  NORMALS = hi;
   const T = {};
   // metres per texture tile (geometry uvs are metres / tile)
   T.tile = { grass: 3, asphalt: 4, concrete: 12, dirt: 6, gravel: 2, kerb: 2, belt: 2.4, wall: 4, paint: 3, fence: 0.25, hazard: 1 };

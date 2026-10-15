@@ -38,13 +38,18 @@ export class Environment {
     buildTrack(this, A);
     this.colliders = new ColliderViews(this);
 
-    const kit = new Kit(this);
+    // one kit per zone: merged meshes stay local, so they are culled per area
     const cones = [];
+    const kit = new Kit(this);
     buildGantry(this, kit);
     buildPits(this, kit);
+    kit.flush();
     buildGrandstands(this, kit);
+    kit.flush();
     buildInfield(this, kit, cones);
+    kit.flush();
     buildDerbyProps(this, kit);
+    kit.flush();
     buildLabProps(this, kit, cones);
     kit.flush();
     buildTrackside(this, A);
@@ -110,7 +115,7 @@ export class Environment {
     const noise = T.noise;
     this.padMat = groundMaterial({ map: T.asphalt, normalMap: hi ? T.asphaltN : null, normalScale: new THREE.Vector2(0.8, 0.8), roughness: hi ? 1 : 0.86 }, {
       noise, macro: { amp: 0.13, s1: 41, s2: 173 }, detail: this.q === 'high' ? { scale: 0.29, mix: 0.5 } : null,
-      patches: { scale: 34, thresh: 0.7, dark: 0.16, rough: 0.92 }, cracks: hi ? { scale: 11, width: 0.0018, dark: 0.4, mask: 0.62 } : null, roughA: hi,
+      patches: { scale: 34, thresh: 0.7, dark: 0.18, rough: 1.06 }, cracks: hi ? { scale: 11, width: 0.0018, dark: 0.4, mask: 0.62 } : null, roughA: hi,
     }, 1);
     this.labMat = groundMaterial({ map: T.concrete, normalMap: hi ? T.concreteN : null, roughness: hi ? 1 : 0.82 }, {
       noise, macro: { amp: 0.1, s1: 29, s2: 151 }, patches: { scale: 26, thresh: 0.74, dark: 0.22, rough: 0.75 }, roughA: hi,
@@ -190,8 +195,8 @@ export class Environment {
           const [ph, f, amp] = wob[i];
           const c = L + Math.sin(a * f + ph) * amp;
           for (const o of [-0.85, 0.85]) {
-            const t = (rad - c - o) / 0.38;
-            v -= Math.exp(-t * t) * (0.22 - i * 0.02) * (0.6 + 0.4 * Math.sin(a * 7 + i));
+            const t = (rad - c - o) / 0.4;
+            v -= Math.exp(-t * t) * (0.34 - i * 0.03) * (0.6 + 0.4 * Math.sin(a * 7 + i));
           }
           const ridge = (rad - c) / 1.6;
           v += Math.exp(-ridge * ridge) * 0.05;

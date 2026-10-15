@@ -109,7 +109,7 @@ export function buildTerrain(env, TR) {
   g.setAttribute('color', new THREE.BufferAttribute(C, 3));
   g.computeBoundingSphere();
   const mat = envMaterial({ map: env.T.grass, vertexColors: true, roughness: 0.95 },
-    { ...grassOptions(env), haze: { scale: 0.62, max: 0.78, alt: 0.0004 } });
+    { ...grassOptions(env), haze: { scale: 0.6, max: 0.7, alt: 0.0004 } });
   const mesh = new THREE.Mesh(g, mat);
   mesh.receiveShadow = q !== 'low';
   env.scene.add(mesh);
@@ -214,12 +214,22 @@ function trunk(h, r0, r1, seg = 5) {
 function spruce(r, lod) {
   const b = new Batch();
   b.add(trunk(3, 0.28, 0.18, lod ? 4 : 6));
-  const tiers = lod ? 3 : 5;
+  const tiers = lod ? 3 : 6;
   const col = lin('#2c4626');
   for (let t = 0; t < tiers; t++) {
     const f = t / (tiers - 1);
-    const rad = 2.7 - f * 2.0, y0 = 1.6 + f * 7.4, h = 3.6 - f * 0.9;
-    const cone = jitter(new THREE.ConeGeometry(rad, h, lod ? 6 : 9, 1, false).toNonIndexed().translate(0, y0 + h / 2, 0), 0.5, r);
+    const rad = (2.7 - f * 2.0) * (0.9 + r() * 0.2), y0 = 1.5 + f * 7.6, h = 3.4 - f * 0.9;
+    // star-shaped, drooping tiers read as branches rather than smooth cones
+    const cg = new THREE.ConeGeometry(rad, h, lod ? 6 : 12, 1, false);
+    const cp = cg.attributes.position, tw = r() * 6.28, pts = lod ? 3 : 6;
+    for (let i = 0; i < cp.count; i++) {
+      const x = cp.getX(i), z = cp.getZ(i), rr = Math.hypot(x, z);
+      if (rr < 1e-3) continue;
+      const a = Math.atan2(z, x) + tw, bump = Math.cos(a * pts);
+      const k = 1 + 0.16 * bump;
+      cp.setXYZ(i, x * k, cp.getY(i) - 0.35 * Math.max(0, bump) * (rr / rad), z * k);
+    }
+    const cone = jitter(cg.toNonIndexed().translate(0, y0 + h / 2, 0), 0.45, r);
     b.add(solidUV(canopy(cone, 0, y0 - 0.6, 0, col, r, 0.35)));
   }
   return b.build();
@@ -336,7 +346,7 @@ export function buildFlora(env, TR, A) {
     inner: q === 'high' ? 1300 : q === 'medium' ? 900 : 450,
     outer: q === 'high' ? 3000 : q === 'medium' ? 2000 : 900,
     bush: q === 'high' ? 420 : q === 'medium' ? 260 : 110,
-    tuft: q === 'high' ? 9000 : q === 'medium' ? 3500 : 0,
+    tuft: q === 'high' ? 6000 : q === 'medium' ? 2500 : 0,
   };
   const pts = world.track.pts;
   // coarse grid of distance to the track centre line for fast rejection
@@ -387,10 +397,18 @@ export function buildFlora(env, TR, A) {
   // inside the boundary: clusters plus scattered singles
   const treePos = [];
   let guard = 0, placed = 0;
-  while (placed < counts.inner && guard++ < counts.inner * 40) {
-    const x = (r() - 0.5) * 1420, z = (r() - 0.5) * 1420;
+  while (placed < counts.inner && guard++ < counts.inner * 60) {
+    let x = (r() - 0.5) * 1420, z = (r() - 0.5) * 1420;
+    // a third of the trees form a belt inside the perimeter fence
+    const belt = placed % 3 === 0;
+    if (belt) {
+      const side = (r() * 4) | 0, along = (r() - 0.5) * 1420, inset = 690 + Math.pow(r(), 0.6) * 24;
+      x = side === 0 ? inset : side === 1 ? -inset : along;
+      z = side === 2 ? inset : side === 3 ? -inset : along;
+    }
     const f = TR.forest(x, z);
-    if (r() > smooth(0.42, 0.66, f) * 0.95 + 0.05) continue;
+    if (!belt && r() > smooth(0.45, 0.62, f) * 0.985 + 0.015) continue;
+    if (belt && r() > smooth(0.3, 0.55, f) * 0.9 + 0.1) continue;
     if (!clearOf(x, z, 0) || near(x, z, HW + 24)) continue;
     const sp = pick(smooth(0.3, 0.8, TR.forest(x * 0.5 + 300, z * 0.5)));
     const sc = 0.75 + r() * 0.6;
@@ -421,7 +439,7 @@ export function buildFlora(env, TR, A) {
     const gi = sp.make(rng(7 + species.indexOf(sp)), false, cards);
     const go = sp.make(rng(17 + species.indexOf(sp)), true, false);
     // quadrant chunks (cell larger than the half-extent of each region)
-    if (inner.has(sp)) env.scene.add(chunkedInstances(gi, treeMat, inner.get(sp), 720, { castShadow: hiQ }).group);
+    if (inner.has(sp)) env.scene.add(chunkedInstances(gi, treeMat, inner.get(sp), 720, { castShadow: false }).group);
     if (outer.has(sp)) env.scene.add(chunkedInstances(go, farMat, outer.get(sp), 1700, { castShadow: false }).group);
   }
 
@@ -437,7 +455,7 @@ export function buildFlora(env, TR, A) {
     bushes.push({ m: trs(x, 0, z, r() * 6.28, sc * (1 + r() * 0.5), sc, sc * (1 + r() * 0.5)), c: new THREE.Color().setRGB(0.85 + r() * 0.3, 0.85 + r() * 0.3, 0.8 + r() * 0.2) });
     treePos.push([x, z, sc * 1.3]);
   }
-  if (bushes.length) env.scene.add(chunkedInstances(bush(rng(5), cards), treeMat, bushes, 720, { castShadow: hiQ }).group);
+  if (bushes.length) env.scene.add(chunkedInstances(bush(rng(5), cards), treeMat, bushes, 720, { castShadow: false }).group);
 
   // grass tufts near the track edges and around the paved zones
   if (counts.tuft) {
@@ -447,14 +465,14 @@ export function buildFlora(env, TR, A) {
       const i = (r() * pts.length) | 0, p = pts[i];
       const side = r() < 0.5 ? -1 : 1;
       // mostly right at the edge of the mown verge, some along the barrier line
-      const o = r() < 0.75 ? HW + 1.8 + Math.pow(r(), 2) * 4 : HW + 8 + r() * 3;
+      const o = r() < 0.6 ? HW + 3.2 + Math.pow(r(), 1.5) * 4 : HW + 8 + r() * 3.5;
       const x = p.x - p.tz * o * side + (r() - 0.5) * 2, z = p.z + p.tx * o * side + (r() - 0.5) * 2;
       // not on gravel (outside of corners), kerbs, roads or near barriers
       if (world.surfaceAt(x, z).type !== 'grass') continue;
       if (A.gravel[i] === side) continue;
       if (Math.abs(o - (HW + 9.2)) < 0.8) continue;
       if (env.blocked(x, z, 0.5)) continue;
-      const sc = 0.6 + r() * 0.7;
+      const sc = 0.5 + r() * 0.6;
       tufts.push({ m: trs(x, 0, z, r() * 6.28, sc, sc * (0.8 + r() * 0.5), sc) });
     }
     env.scene.add(chunkedInstances(tuft(rng(3)), env.M.tuft, tufts, 300, { castShadow: false }).group);
@@ -492,16 +510,23 @@ export function fillWorldMap(env, treePos) {
   const data = env.worldMap.image.data;
   const dist = new Float32Array(S * S).fill(64);
   const R = Math.ceil((64 + HW) / px);
-  for (const p of env.world.track.pts) {
-    const cx = (p.x - X0) / px, cz = (p.z - X0) / px;
+  // squared distances in pixels first (every other track point is plenty at 3 m/px)
+  const d2 = new Float32Array(S * S).fill(1e9);
+  const pts = env.world.track.pts;
+  for (let n = 0; n < pts.length; n += 2) {
+    const p = pts[n];
+    const cx = (p.x - X0) / px - 0.5, cz = (p.z - X0) / px - 0.5;
     const i0 = Math.max(0, Math.floor(cx - R)), i1 = Math.min(S - 1, Math.ceil(cx + R));
     const j0 = Math.max(0, Math.floor(cz - R)), j1 = Math.min(S - 1, Math.ceil(cz + R));
-    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
-      const d = Math.hypot(i + 0.5 - cx, j + 0.5 - cz) * px - HW;
-      const k = j * S + i;
-      if (d < dist[k]) dist[k] = d;
+    for (let j = j0; j <= j1; j++) {
+      const dz = j - cz, row = j * S;
+      for (let i = i0; i <= i1; i++) {
+        const dx = i - cx, v = dx * dx + dz * dz;
+        if (v < d2[row + i]) d2[row + i] = v;
+      }
     }
   }
+  for (let k = 0; k < S * S; k++) dist[k] = Math.min(64, Math.sqrt(d2[k]) * px - HW);
   const shade = new Float32Array(S * S);
   for (const [x, z, rad] of treePos) {
     const cx = (x - X0) / px, cz = (z - X0) / px, rr = rad * 1.25 / px + 0.8;

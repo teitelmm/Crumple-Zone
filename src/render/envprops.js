@@ -184,6 +184,12 @@ export function buildPits(env, kit) {
     for (let x = xa + 1; x < xb; x += 12) kit.box('steel', x, 0, G - 2.9, 0.2, 8.75, 0.2);
     // rooftop plant
     for (let x = xa + 8; x < xb - 6; x += 22) kit.box('paintVC', x, 9.2, BZ - 4, 4, 1.6, 3, steelC);
+    // paddock side: office windows above, service doors below
+    kit.add('glass', new THREE.PlaneGeometry(W - 2, 1.6).translate(cx, 6.6, BZ + 0.03), null, null, boxUV(4, 1.6));
+    for (let x = xa + 3; x < xb - 2.9; x += 6) {
+      kit.add('door', new THREE.PlaneGeometry(3.2, 3.4).translate(x, 1.7, BZ + 0.03));
+      kit.box('paintVC', x, 3.4, BZ + 0.15, 3.6, 0.2, 0.3, darkGrey);
+    }
     env.blockRect(xa - 2, G - 4, xb + 2, BZ + 3);
     env.shadeRects.push([cx, (G + BZ) / 2, W + 6, D + 8, 0.6]);
   }
@@ -260,7 +266,7 @@ export function buildGrandstands(env, kit) {
           if (r() > fill) continue;
           const local = trs(x + (r() - 0.5) * 0.1, y, z0 + rowD - 0.32, (r() - 0.5) * 0.5, 1, 0.92 + r() * 0.16, 1);
           const u = r();
-          const c = u < 0.3 ? new THREE.Color().setHSL(0, 0, 0.15 + r() * 0.7) : new THREE.Color().setHSL(r(), 0.15 + r() * 0.4, 0.25 + r() * 0.35);
+          const c = u < 0.45 ? new THREE.Color().setHSL(0, 0, 0.06 + r() * r() * 0.6) : new THREE.Color().setHSL(r(), 0.2 + r() * 0.35, 0.12 + r() * 0.25);
           crowd.push({ m: m.clone().multiply(local), c: c.multiplyScalar(shade) });
         }
       }

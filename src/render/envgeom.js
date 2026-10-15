@@ -60,6 +60,20 @@ export class Batch {
   }
 }
 
+// Batches bucketed by world position (cell metres), one mesh per bucket, so
+// long runs of merged geometry still benefit from frustum / shadow culling.
+export class BucketBatch {
+  constructor(cell) { this.cell = cell; this.b = new Map(); }
+  add(x, z, geo, matrix, color, uvFn) {
+    const k = Math.floor(x / this.cell) + ',' + Math.floor(z / this.cell);
+    let b = this.b.get(k);
+    if (!b) this.b.set(k, b = new Batch());
+    b.add(geo, matrix, color, uvFn);
+  }
+  get empty() { return this.b.size === 0; }
+  meshes(mat, colors = true) { return [...this.b.values()].map(b => new THREE.Mesh(b.build(colors), mat)); }
+}
+
 // collapse a vertex range of a built geometry (hides a merged piece)
 export function hideRange(geo, [start, count]) {
   const p = geo.attributes.position;
