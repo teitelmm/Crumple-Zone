@@ -33,7 +33,7 @@ varying float vKind;
 void main() {
   float u = vMark.x;
   float rut = step(0.5, vKind);
-  float edge = smoothstep(0.0, mix(0.2, 0.38, rut), u) * smoothstep(1.0, mix(0.8, 0.62, rut), u);
+  float edge = smoothstep(0.0, mix(0.2, 0.3, rut), u) * smoothstep(1.0, mix(0.8, 0.7, rut), u);
   vec4 nz = texture2D(uNoise, vec2(u * 0.45, vMark.y * 0.11));
   float grain = mix(0.62 + 0.38 * nz.r, 0.75 + 0.25 * nz.b, rut);
   float breakup = texture2D(uNoise, vec2(vMark.y * 0.021, 0.37)).g;
@@ -53,8 +53,9 @@ void main() {
 
 const KIND = { asphalt: 0, concrete: 0, kerb: 0, grass: 1, dirt: 2 };
 
-
 const MIN_SEG2 = 0.3 * 0.3;
+// contact patch length (m): how wide the mark is when the tyre slides sideways
+const PATCH = 0.17;
 
 export class SkidMarks {
   constructor(scene, max, noise) {
@@ -81,9 +82,11 @@ export class SkidMarks {
     this.uniforms = THREE.UniformsUtils.merge([THREE.UniformsLib.fog, {
       uSerial: { value: 0 },
       uFade: { value: new THREE.Vector2(max * 0.7, max * 0.98) },
-      uRubber: { value: new THREE.Color('#151617') },
-      uGrass: { value: new THREE.Color('#4a4128') },
-      uDirt: { value: new THREE.Color('#6e5c48') },
+      // linear multipliers at full strength: rubber leaves tarmac at ~30-40% of its
+      // brightness, torn turf goes darker olive-brown, compacted dirt a darker brown
+      uRubber: { value: new THREE.Color().setRGB(0.3, 0.3, 0.31) },
+      uGrass: { value: new THREE.Color().setRGB(0.46, 0.4, 0.24) },
+      uDirt: { value: new THREE.Color().setRGB(0.52, 0.43, 0.35) },
     }]);
     this.uniforms.uNoise = { value: noise };
     const m = new THREE.ShaderMaterial({
@@ -95,6 +98,8 @@ export class SkidMarks {
     });
     this.mesh = new THREE.Mesh(g, m);
     this.mesh.frustumCulled = false;
+    // a flat decal: keep it out of depth/normal pre-passes (ambient occlusion)
+    this.mesh.userData.noAO = true;
     // after the ground layers (renderOrder -10..-2), before everything that stands on them
     this.mesh.renderOrder = -1;
     this.mesh.visible = false;
@@ -109,7 +114,7 @@ export class SkidMarks {
 
   rec(key) {
     let r = this.recs[key];
-    if (!r) r = this.recs[key] = { on: false, x: 0, z: 0, y: 0, lx: 0, lz: 0, rx: 0, rz: 0, a: 0, d: 0, kind: 0 };
+    if (!r) r = this.recs[key] = { on: false, fresh: false, x: 0, z: 0, y: 0, lx: 0, lz: 0, rx: 0, rz: 0, nx: 0, nz: 1, a: 0, d: 0, kind: 0 };
     return r;
   }
 
@@ -120,26 +125,38 @@ export class SkidMarks {
     if (k !== undefined) this.rec(this.lastKey).kind = k;
   }
 
-  // add a segment for a wheel key; intensity 0..1
+  // add a segment for a wheel key; intensity 0..1. (rx, rz) is the wheel's axle direction.
   add(key, x, y, z, rx, rz, width, intensity) {
     this.lastKey = key; this.lastX = x; this.lastZ = z;
     const r = this.rec(key);
     if (!(intensity > 0.05) || !(width > 0)) { r.on = false; return; }
     const rut = r.kind > 0;
-    const hw = width * (rut ? 0.62 : 0.5);
     const yy = y + 0.02;
-    const target = rut ? Math.min(1, 0.3 + intensity * 1.4) : Math.min(0.92, 0.3 + intensity * 0.9);
+    const target = rut ? Math.min(1, 0.3 + intensity * 1.4) : Math.min(0.85, 0.25 + intensity * 0.8);
     if (!r.on || (r.x - x) ** 2 + (r.z - z) ** 2 > 4) {
-      r.on = true; r.x = x; r.z = z; r.y = yy;
-      r.lx = x - rx * hw; r.lz = z - rz * hw; r.rx = x + rx * hw; r.rz = z + rz * hw;
-      r.a = 0; r.d = 0;
+      // start a new ribbon; its first edge is placed once the direction of travel is known
+      r.on = true; r.fresh = true; r.x = x; r.z = z; r.y = yy;
+      r.nx = rx; r.nz = rz; r.a = 0; r.d = 0;
       return;
     }
     const dx = x - r.x, dz = z - r.z, d2 = dx * dx + dz * dz;
     if (d2 < MIN_SEG2) return;
+    const dl = Math.sqrt(d2);
+    // The ribbon runs across the path, not along the axle: a tyre sliding sideways
+    // would otherwise lay its quads along the path and leave a sawtooth. Keep the
+    // same side as the last edge so the strip never twists (reversing, spins).
+    let nx = -dz / dl, nz = dx / dl;
+    if (nx * r.nx + nz * r.nz < 0) { nx = -nx; nz = -nz; }
+    // footprint across the path: tread width along the axle, contact patch length along the tread
+    const c = Math.min(1, Math.abs(rx * nx + rz * nz));
+    const hw = 0.5 * (width * c + PATCH * Math.sqrt(1 - c * c)) * (rut ? 1.45 : 1);
+    if (r.fresh) {
+      r.fresh = false;
+      r.lx = r.x - nx * hw; r.lz = r.z - nz * hw; r.rx = r.x + nx * hw; r.rz = r.z + nz * hw;
+    }
     const a = r.a + (target - r.a) * 0.6;
-    const d = r.d + Math.sqrt(d2);
-    const lx = x - rx * hw, lz = z - rz * hw, Rx = x + rx * hw, Rz = z + rz * hw;
+    const d = r.d + dl;
+    const lx = x - nx * hw, lz = z - nz * hw, Rx = x + nx * hw, Rz = z + nz * hw;
     const q = this.cursor;
     this.cursor = (q + 1) % this.max;
     if (this.used < this.max) this.used++;
@@ -159,7 +176,7 @@ export class SkidMarks {
     K[o] = K[o + 1] = K[o + 2] = K[o + 3] = r.kind;
     if (q < this.lo) this.lo = q;
     if (q > this.hi) this.hi = q;
-    r.x = x; r.z = z; r.y = yy; r.lx = lx; r.lz = lz; r.rx = Rx; r.rz = Rz; r.a = a; r.d = d;
+    r.x = x; r.z = z; r.y = yy; r.lx = lx; r.lz = lz; r.rx = Rx; r.rz = Rz; r.nx = nx; r.nz = nz; r.a = a; r.d = d;
   }
 
   // once per frame: upload what changed

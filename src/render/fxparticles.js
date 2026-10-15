@@ -63,6 +63,7 @@ varying vec3 vColor;
 varying vec4 vMisc;        // alpha, erosion, seed
 varying vec3 vLight;
 varying vec3 vUp;
+varying vec4 vSph;         // centre view-space z, radius, projection terms for depth
 #include <fog_pars_vertex>
 void main() {
   vec4 mvPosition = modelViewMatrix * vec4(aPosSize.xyz, 1.0);
@@ -71,9 +72,16 @@ void main() {
   vec2 ax = vec2(c, s), ay = vec2(-s, c);
   vec2 corner = position.xy;
   float dist = -mvPosition.z;
+  // depth offsets are capped at about a metre so big old puffs do not show through
+  // walls and cars standing in front of them
+  float rd = min(r, 1.0);
+  vSph = vec4(mvPosition.z, rd, projectionMatrix[2][2], projectionMatrix[3][2]);
   mvPosition.xy += (ax * corner.x + ay * corner.y) * r;
-  mvPosition.z += r * uLift;
-  float fade = smoothstep(uNearFade.x, uNearFade.y, dist - r * 0.5);
+  // pulled towards the camera so puffs mostly clear the bodywork they billow
+  // around (no depth texture for true soft particles); fade out before the
+  // lifted quad reaches the camera
+  mvPosition.z += rd * uLift;
+  float fade = smoothstep(uNearFade.x, uNearFade.y, dist - max(r * 0.5, rd * uLift));
   float frame = floor(aParams.z);
   vec2 cell = vec2(mod(frame, 2.0), floor(frame * 0.5));
   vLocal = corner;
@@ -103,6 +111,8 @@ varying vec3 vColor;
 varying vec4 vMisc;
 varying vec3 vLight;
 varying vec3 vUp;
+varying vec4 vSph;
+uniform float uLift;
 #include <fog_pars_fragment>
 void main() {
   vec4 t = texture2D(uMap, vUv);
@@ -115,6 +125,14 @@ void main() {
   float e = vMisc.y;
   float a = clamp((dens - e) / (1.0 - e), 0.0, 1.0) * vMisc.x;
   if (a < 0.003) discard;
+  #ifdef DEPTH_BULGE
+  // Pseudo-volume depth: dense parts of the puff bulge towards the camera and wisps
+  // lie back, so where a puff meets bodywork or a wall the cut follows the cloud's
+  // own billows instead of the straight edge of a flat quad (no depth texture for
+  // true soft particles).
+  float zf = min(vSph.x + vSph.y * (uLift * 0.45 + 0.85 * dens), -1e-3);
+  gl_FragDepth = clamp(0.5 - 0.5 * (vSph.z * zf + vSph.w) / zf, 0.0, 1.0);
+  #endif
   vec3 n = vec3(t.rg * 2.0 - 1.0, 0.0);
   n.z = sqrt(max(0.05, 1.0 - dot(n.xy, n.xy)));
   float ndl = dot(n, vLight);
@@ -141,7 +159,7 @@ void main() {
 }`;
 
 export class BillboardPool {
-  // opts: { max, map, detail, lit, additive, lift, nearFade:[a,b], renderOrder }
+  // opts: { max, map, detail, lit, bulge, additive, lift, nearFade:[a,b], renderOrder }
   constructor(scene, opts) {
     const n = this.max = opts.max;
     this.lit = !!opts.lit;
@@ -176,6 +194,7 @@ export class BillboardPool {
     const defines = {};
     if (this.lit) defines.LIT = '';
     if (this.lit && opts.detail) defines.DETAIL = '';
+    if (this.lit && opts.bulge) defines.DEPTH_BULGE = '';
     this.uniforms = THREE.UniformsUtils.merge([THREE.UniformsLib.fog, {
       uSunDir: { value: new THREE.Vector3(0.6, 0.7, 0.35).normalize() },
       uSunColor: { value: new THREE.Color(0.85, 0.8, 0.72) },
@@ -288,6 +307,16 @@ export class BillboardPool {
     this.mesh.visible = j > 0;
   }
 
+  // per-pixel depth assumes a standard perspective depth buffer
+  checkRenderer(renderer) {
+    if (this.checked) return;
+    this.checked = true;
+    if (renderer.capabilities.logarithmicDepthBuffer && this.mat.defines.DEPTH_BULGE !== undefined) {
+      delete this.mat.defines.DEPTH_BULGE;
+      this.mat.needsUpdate = true;
+    }
+  }
+
   // sunDir: world vector towards the sun; colours are linear radiance multipliers
   setLighting(sunDir, sun, sky, ground) {
     const u = this.uniforms;
@@ -345,20 +374,31 @@ varying float vHeat;
 varying float vAlpha;
 #include <fog_pars_fragment>
 void main() {
-  // hot core a third of the quad wide plus a soft orange halo (cheap stand-in for bloom)
+  // A thin core about a third of the quad wide plus a faint halo (a cheap stand-in
+  // for bloom on 'low'). Blending is premultiplied "additive-over": the core hides
+  // part of what is behind it while the halo only adds light. Purely additive
+  // streaks over sunlit tarmac go pale peach under a filmic tone curve; covering
+  // the background keeps the body a saturated orange. The part near the head,
+  // where the spark is now, is white-hot (far above 1, so the bloom pass catches
+  // it) and longer the hotter the spark; cooling sparks (age, bounces) end as
+  // short dull red streaks.
   float y = abs(vCoord.y);
-  float core = smoothstep(0.36, 0.0, y);
-  float halo = (1.0 - y) * (1.0 - y);
+  float core = smoothstep(0.45, 0.0, y);
+  float halo = 1.0 - y;
+  halo *= halo * halo;
   float along = vCoord.x;
-  float tail = 0.12 + 0.88 * along * along;
-  vec3 hot = vec3(1.0, 0.62, 0.24) * 3.6;
-  vec3 warm = vec3(1.0, 0.27, 0.04) * 1.9;
-  vec3 col = mix(warm, hot, vHeat * vHeat) * core + vec3(1.0, 0.32, 0.06) * (0.55 * vHeat) * halo;
-  gl_FragColor = vec4(col * uIntensity * tail, vAlpha);
+  float h = vHeat;
+  float hot = smoothstep(1.0 - 0.9 * h, 1.0, along);
+  vec3 body = vec3(1.0, 0.22, 0.02) * (0.3 + 0.9 * h);
+  vec3 white = vec3(1.0, 0.72, 0.38) * (2.5 + 10.0 * h * h);
+  float tail = 0.2 + 0.8 * along;
+  vec3 col = (mix(body, white, hot * hot) * core + vec3(1.0, 0.25, 0.03) * (0.08 + 0.35 * h) * halo) * tail;
+  float cover = core * tail * (0.5 + 0.5 * h);
+  gl_FragColor = vec4(col * uIntensity, 1.0);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
   ${FOG_FACTOR}
-  gl_FragColor.a *= 1.0 - fogF;
+  gl_FragColor = vec4(gl_FragColor.rgb, cover) * (vAlpha * (1.0 - fogF));
 }`;
 
 export class StreakPool {
@@ -377,14 +417,17 @@ export class StreakPool {
     this.aVel = instAttr(g, 'aVel', max, 4);
     this.uniforms = THREE.UniformsUtils.merge([THREE.UniformsLib.fog, {
       uViewHeight: { value: 720 },
-      uStreakTime: { value: 0.03 },
+      uStreakTime: { value: 0.045 },
       uWidth: { value: 0.022 },
       uMinPx: { value: 2.2 },
       uIntensity: { value: 1 },
     }]);
     this.mat = new THREE.ShaderMaterial({
       uniforms: this.uniforms, vertexShader: ST_VS, fragmentShader: ST_FS,
-      transparent: true, depthWrite: false, fog: true, blending: THREE.AdditiveBlending,
+      transparent: true, depthWrite: false, fog: true,
+      // premultiplied: rgb is added, alpha says how much of the background the core hides
+      blending: THREE.CustomBlending, blendEquation: THREE.AddEquation,
+      blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor,
     });
     this.mesh = new THREE.Mesh(g, this.mat);
     this.mesh.frustumCulled = false;
@@ -427,7 +470,7 @@ export class StreakPool {
         life[i] = Math.min(life[i], a + 0.35 / this.bounces[i]);
       }
       const t = a / life[i];
-      const heat = this.heat0[i] * (1 - t * 0.85) / (1 + this.bounces[i] * 0.6);
+      const heat = this.heat0[i] * (1 - t * 0.7) / (1 + this.bounces[i] * 0.5);
       const o = j * 4;
       H[o] = p[i3]; H[o + 1] = p[i3 + 1]; H[o + 2] = p[i3 + 2]; H[o + 3] = heat;
       V[o] = v[i3]; V[o + 1] = v[i3 + 1]; V[o + 2] = v[i3 + 2]; V[o + 3] = 1 - t * t;

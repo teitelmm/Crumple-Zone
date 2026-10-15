@@ -11,9 +11,9 @@ import { SkidMarks } from './fxskids.js';
 // Budgets per quality tier. 'low' halves the pools and shrinks puffs to keep phone
 // overdraw down; 'high' gets detail noise in the smoke, shadows on debris and more glints.
 const QUALITY = {
-  high: { smoke: 640, glints: 72, sparks: 600, shards: 420, plastic: 160, metal: 90, skids: 4096, size: 1, alpha: 1, detail: true, sparkPerCall: 2, glassPerEvent: 90, glassBurst: 10, glintFly: 2.5, glintRest: 0.04, debrisMul: 0.8, debrisRate: 160, shadows: true, hotspots: 0.3, clods: 160, clodRate: 0.35, tex: 128 },
-  medium: { smoke: 480, glints: 48, sparks: 400, shards: 280, plastic: 110, metal: 60, skids: 3072, size: 0.85, alpha: 1.05, detail: true, sparkPerCall: 1, glassPerEvent: 60, glassBurst: 8, glintFly: 1.5, glintRest: 0.02, debrisMul: 0.7, debrisRate: 110, shadows: false, hotspots: 0.2, clods: 100, clodRate: 0.25, tex: 128 },
-  low: { smoke: 320, glints: 24, sparks: 200, shards: 140, plastic: 60, metal: 30, skids: 2048, size: 0.65, alpha: 1.2, detail: false, sparkPerCall: 1, glassPerEvent: 30, glassBurst: 5, glintFly: 0.8, glintRest: 0, debrisMul: 0.6, debrisRate: 60, shadows: false, hotspots: 0, clods: 50, clodRate: 0.15, tex: 64 },
+  high: { smoke: 640, glints: 72, sparks: 600, shards: 420, plastic: 160, metal: 90, skids: 4096, size: 1, alpha: 1, detail: true, bulge: true, sparkPerCall: 2, glassPerEvent: 110, glassBurst: 7, glintFly: 2.5, glintRest: 0.04, debrisMul: 0.8, debrisRate: 160, shadows: true, hotspots: 0.3, clods: 160, clodRate: 0.35, tex: 128 },
+  medium: { smoke: 480, glints: 48, sparks: 400, shards: 280, plastic: 110, metal: 60, skids: 3072, size: 0.85, alpha: 1.05, detail: true, bulge: true, sparkPerCall: 1, glassPerEvent: 75, glassBurst: 5, glintFly: 1.5, glintRest: 0.02, debrisMul: 0.7, debrisRate: 110, shadows: false, hotspots: 0.2, clods: 100, clodRate: 0.25, tex: 128 },
+  low: { smoke: 320, glints: 24, sparks: 200, shards: 140, plastic: 60, metal: 30, skids: 2048, size: 0.65, alpha: 1.2, detail: false, bulge: false, sparkPerCall: 1, glassPerEvent: 36, glassBurst: 4, glintFly: 0.8, glintRest: 0, debrisMul: 0.6, debrisRate: 60, shadows: false, hotspots: 0, clods: 50, clodRate: 0.15, tex: 64 },
 };
 
 // Particle presets (life range s, start/end radius m, peak opacity, fade-in s,
@@ -21,11 +21,11 @@ const QUALITY = {
 const P_TYRE = { life: [2.0, 3.2], r0: 0.32, r1: 2.3, alpha: 0.5, fadeIn: 0.12, erode: 0.55, buoy: 0.22, drag: 1.3, wind: 1, turb: 0.6, spin: 0.7 };
 const P_DUST = { life: [1.8, 2.8], r0: 0.38, r1: 2.1, alpha: 0.6, fadeIn: 0.08, erode: 0.5, buoy: -0.04, drag: 1.8, wind: 0.8, turb: 0.4, spin: 0.5 };
 const P_STEAM = { life: [0.9, 1.5], r0: 0.12, r1: 1.0, alpha: 0.45, fadeIn: 0.06, erode: 0.75, buoy: 1.4, drag: 1.0, wind: 1.2, turb: 1.2, spin: 1.2 };
-const P_OIL = { life: [2.4, 3.6], r0: 0.18, r1: 2.6, alpha: 0.4, fadeIn: 0.1, erode: 0.55, buoy: 0.9, drag: 0.9, wind: 1.4, turb: 1.0, spin: 0.6 };
+const P_OIL = { life: [2.4, 3.6], r0: 0.18, r1: 2.6, alpha: 0.34, fadeIn: 0.1, erode: 0.55, buoy: 0.9, drag: 0.9, wind: 1.4, turb: 1.0, spin: 0.6 };
 const P_CRASH = { life: [1.6, 2.6], r0: 0.5, r1: 2.6, alpha: 0.32, fadeIn: 0.05, erode: 0.5, buoy: 0.05, drag: 2.2, wind: 0.8, turb: 0.5, spin: 0.5 };
 const P_WHEEL = { life: [1.2, 2.0], r0: 0.25, r1: 1.3, alpha: 0.3, fadeIn: 0.08, erode: 0.5, buoy: 0.05, drag: 1.8, wind: 0.8, turb: 0.4, spin: 0.5 };
-const P_GLINT = { life: [0.08, 0.2], r0: 0.08, r1: 0.12, alpha: 1, fadeIn: 0.025, erode: 0, buoy: 0, drag: 0, wind: 0, turb: 0, spin: 2 };
-const P_BURST = { life: [0.1, 0.25], r0: 0.16, r1: 0.26, alpha: 1, fadeIn: 0.02, erode: 0, buoy: 0, drag: 0, wind: 0, turb: 0, spin: 1 };
+const P_GLINT = { life: [0.08, 0.2], r0: 0.05, r1: 0.075, alpha: 1, fadeIn: 0.025, erode: 0, buoy: 0, drag: 0, wind: 0, turb: 0, spin: 2 };
+const P_BURST = { life: [0.08, 0.2], r0: 0.06, r1: 0.09, alpha: 1, fadeIn: 0.02, erode: 0, buoy: 0, drag: 0, wind: 0, turb: 0, spin: 1 };
 const P_HOT = { life: [0.04, 0.08], r0: 0.09, r1: 0.12, alpha: 1, fadeIn: 0.01, erode: 0, buoy: 0, drag: 0, wind: 0, turb: 0, spin: 4 };
 
 // albedo (linear)
@@ -35,12 +35,12 @@ const C_DIRT2 = linearRGB('#b9a78f');
 const C_GRASS = linearRGB('#857a5e');
 const C_GRASS2 = linearRGB('#a39a84');
 const C_STEAM = linearRGB('#f4f6f7');
-const C_OIL = linearRGB('#2a2723');
+const C_OIL = linearRGB('#2f2c29');
 const C_OIL2 = linearRGB('#77736d');
 const C_CRASH = linearRGB('#a9a59d');
 const C_WHEEL = linearRGB('#a39c8e');
 // emissive HDR colours (linear, > 1 so bloom can pick them up)
-const C_GLINT = [7, 7.4, 8];
+const C_GLINT = [5, 5.3, 5.8];
 const C_HOT = [9, 5, 1.6];
 
 const CLOD_DIRT = [0x5b4633, 0x6b5440, 0x4a3a2a, 0x7a6249];
@@ -53,8 +53,8 @@ const _v = new THREE.Vector3();
 const _v2 = new THREE.Vector3();
 
 class LooseWheel {
-  constructor(scene, spec, pos, vel, side) {
-    this.mesh = makeWheelMesh(spec);
+  constructor(scene, spec, pos, vel, side, quality) {
+    this.mesh = makeWheelMesh(spec, quality);
     if (side < 0) this.mesh.scale.z = -1;
     this.r = spec.dims.wheelRadius;
     this.p = new THREE.Vector3(...pos);
@@ -102,12 +102,14 @@ export class Effects {
     const Q = this.Q = QUALITY[quality] || QUALITY.high;
     const puff = makePuffAtlas(Q.tex), noise = makeNoiseTexture(Q.tex), glintTex = makeGlintTexture();
 
-    this.smoke = new BillboardPool(scene, { max: Q.smoke, map: puff, detail: Q.detail ? noise : null, lit: true, lift: 0.3, nearFade: [0.3, 2.2], renderOrder: 2 });
+    this.smoke = new BillboardPool(scene, { max: Q.smoke, map: puff, detail: Q.detail ? noise : null, bulge: Q.bulge, lit: true, lift: 0.65, nearFade: [0.3, 2.2], renderOrder: 2 });
     this.glints = new BillboardPool(scene, { max: Q.glints, map: glintTex, additive: true, nearFade: [0.1, 0.4], renderOrder: 4 });
     this.sparks = new StreakPool(scene, Q.sparks);
 
-    // glass mostly shows what is behind it (dark) plus sharp sky/sun reflections
-    const glassMat = new THREE.MeshStandardMaterial({ color: '#7d9592', metalness: 0.55, roughness: 0.08, envMapIntensity: 1.4, flatShading: true, side: THREE.DoubleSide });
+    // Glass is a dielectric: ~4% reflective face-on (the dark green-grey base stands in
+    // for the ground seen through it), mirror-bright at grazing angles, so the
+    // tumbling facets flash instead of reading as white paper chips.
+    const glassMat = new THREE.MeshStandardMaterial({ color: '#4c5a57', metalness: 0, roughness: 0.04, envMapIntensity: 1.7, flatShading: true, side: THREE.DoubleSide });
     this.shards = new RigidPool(scene, { max: Q.shards, geometry: shardGeometry(), material: glassMat, restLife: 30, bounce: 0.35 });
     const plasticMat = new THREE.MeshStandardMaterial({ color: '#ffffff', metalness: 0.05, roughness: 0.55, flatShading: true });
     const metalMat = new THREE.MeshStandardMaterial({ color: '#ffffff', metalness: 0.85, roughness: 0.35, flatShading: true });
@@ -127,7 +129,7 @@ export class Effects {
     this.camPos = new THREE.Vector3(0, 5, 0);
     const grabCamera = (r, s, cam) => { this.camPos.setFromMatrixPosition(cam.matrixWorld); };
     this.skids.mesh.onBeforeRender = grabCamera;
-    this.smoke.mesh.onBeforeRender = grabCamera;
+    this.smoke.mesh.onBeforeRender = (r, s, cam) => { grabCamera(r, s, cam); this.smoke.checkRenderer(r); };
 
     // lighting taken from the scene's own lights (found lazily)
     this.sun = null; this.hemi = null; this.lightScan = 0;
@@ -195,10 +197,11 @@ export class Effects {
   glass(x, y, z, vx, vy, vz) {
     const Q = this.Q;
     for (let k = 0; k < Q.glassPerEvent; k++) {
-      const s = 0.012 + Math.random() * Math.random() * 0.03;
+      // tempered glass crumbles into small nuggets (mostly 1-2 cm, a few larger)
+      const s = 0.007 + Math.random() * Math.random() * 0.024;
       this.shards.emit(x + (Math.random() - 0.5) * 0.9, y + (Math.random() - 0.5) * 0.3, z + (Math.random() - 0.5) * 0.9,
         vx * 0.6 + (Math.random() - 0.5) * 5, vy + Math.random() * 3, vz * 0.6 + (Math.random() - 0.5) * 5,
-        s * rnd(0.8, 1.5), 0.005 + Math.random() * 0.004, s * rnd(0.6, 1.2));
+        s * rnd(0.8, 1.4), 0.004 + Math.random() * 0.003, s * rnd(0.6, 1.1));
     }
     for (let k = 0; k < Q.glassBurst; k++) {
       this.glints.emit(x + (Math.random() - 0.5) * 0.9, y + (Math.random() - 0.5) * 0.4, z + (Math.random() - 0.5) * 0.9,
@@ -243,7 +246,7 @@ export class Effects {
   }
 
   looseWheel(spec, pos, vel, side) {
-    this.loose.push(new LooseWheel(this.scene, spec, pos, vel, side));
+    this.loose.push(new LooseWheel(this.scene, spec, pos, vel, side, this.quality));
     if (this.loose.length > 12) this.loose.shift().dispose();
   }
 

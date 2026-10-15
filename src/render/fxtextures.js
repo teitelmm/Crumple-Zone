@@ -152,7 +152,8 @@ export function makeGlintTexture(size = 64) {
     for (let i = 0; i < size; i++) {
       const u = ((i + 0.5) / size) * 2 - 1, v = ((j + 0.5) / size) * 2 - 1;
       const r2 = u * u + v * v;
-      const core = Math.exp(-r2 * 28) + 0.35 * Math.exp(-r2 * 6);
+      // tight hot core; a broad soft core would saturate into a white disc at HDR intensity
+      const core = Math.exp(-r2 * 40) + 0.12 * Math.exp(-r2 * 9);
       const ray = Math.exp(-Math.abs(v) * 42) * Math.max(0, 1 - Math.abs(u)) ** 2
         + Math.exp(-Math.abs(u) * 42) * Math.max(0, 1 - Math.abs(v)) ** 2;
       const du = (u + v) * 0.7071, dv = (u - v) * 0.7071;
