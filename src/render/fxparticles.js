@@ -26,6 +26,19 @@ function quadGeometry(x0, x1) {
   return g;
 }
 
+// Octagon circumscribing the unit circle (apothem 1). The puff atlas is empty
+// outside radius 1, so this draws the same pixels as a quad with ~17% fewer
+// fragments, all of them in the corners that were sampled and discarded.
+function octagonGeometry() {
+  const g = new THREE.InstancedBufferGeometry();
+  const k = Math.tan(Math.PI / 8);
+  const pos = [1, -k, 0, 1, k, 0, k, 1, 0, -k, 1, 0, -1, k, 0, -1, -k, 0, -k, -1, 0, k, -1, 0];
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex([0, 1, 2, 0, 2, 3, 0, 3, 4, 0, 4, 5, 0, 5, 6, 0, 6, 7]);
+  g.instanceCount = 0;
+  return g;
+}
+
 function instAttr(g, name, n, size) {
   const a = new THREE.InstancedBufferAttribute(new Float32Array(n * size), size).setUsage(THREE.DynamicDrawUsage);
   g.setAttribute(name, a);
@@ -72,6 +85,16 @@ void main() {
   vec2 ax = vec2(c, s), ay = vec2(-s, c);
   vec2 corner = position.xy;
   float dist = -mvPosition.z;
+#ifdef MAX_SCREEN
+  // A puff right in front of the lens would fill the screen with mostly empty,
+  // heavily overdrawn fragments: cap its radius at ~30% of the view height and
+  // let the oversized ones thin out.
+  float rs = r * projectionMatrix[1][1] / max(dist, 1e-3);
+  r = min(r, 0.35 * dist);
+  float big = 1.0 - 0.6 * smoothstep(0.6, 1.2, rs);
+#else
+  float big = 1.0;
+#endif
   // depth offsets are capped below a metre so big old puffs do not show through
   // walls and cars standing in front of them
   float rd = min(r, 0.9);
@@ -85,9 +108,13 @@ void main() {
   float frame = floor(aParams.z);
   vec2 cell = vec2(mod(frame, 2.0), floor(frame * 0.5));
   vLocal = corner;
+#ifdef LIT
   vUv = (corner * 0.5 + 0.5 + cell) * 0.5;
+#else
+  vUv = corner * 0.5 + 0.5; // unlit pools (glints) use a single image, not the 2x2 atlas
+#endif
   vColor = aColor;
-  vMisc = vec4(aParams.y * fade, aParams.w, fract(aParams.z), 0.0);
+  vMisc = vec4(aParams.y * fade * big, aParams.w, fract(aParams.z), 0.0);
 #ifdef LIT
   vec3 L = normalize((viewMatrix * vec4(uSunDir, 0.0)).xyz);
   vLight = vec3(dot(L.xy, ax), dot(L.xy, ay), L.z);
@@ -182,12 +209,14 @@ export class BillboardPool {
     this.drag = new Float32Array(n);
     this.windK = new Float32Array(n);
     this.turb = new Float32Array(n);
+    this.shear = new Float32Array(n);
+    this.colK = new Float32Array(n);  // 1 / fraction of life the colour change takes
     this.keys = new Uint32Array(n);
     this.cursor = 0;
     this.live = 0;
     this.time = 0;
 
-    const g = this.geo = quadGeometry(-1, 1);
+    const g = this.geo = octagonGeometry();
     this.aPosSize = instAttr(g, 'aPosSize', n, 4);
     this.aParams = instAttr(g, 'aParams', n, 4);
     this.aColor = instAttr(g, 'aColor', n, 3);
@@ -195,6 +224,7 @@ export class BillboardPool {
     if (this.lit) defines.LIT = '';
     if (this.lit && opts.detail) defines.DETAIL = '';
     if (this.lit && opts.bulge) defines.DEPTH_BULGE = '';
+    if (opts.maxScreen) defines.MAX_SCREEN = '';
     this.uniforms = THREE.UniformsUtils.merge([THREE.UniformsLib.fog, {
       uSunDir: { value: new THREE.Vector3(0.6, 0.7, 0.35).normalize() },
       uSunColor: { value: new THREE.Color(0.85, 0.8, 0.72) },
@@ -231,7 +261,8 @@ export class BillboardPool {
     this.age[i] = 0;
     this.life[i] = k.life[0] + Math.random() * (k.life[1] - k.life[0]);
     this.r0[i] = k.r0 * sizeMul * (0.8 + Math.random() * 0.4);
-    this.r1[i] = k.r1 * sizeMul * (0.75 + Math.random() * 0.5);
+    const rv = k.rVar ?? 0.25;
+    this.r1[i] = k.r1 * sizeMul * (1 - rv + Math.random() * 2 * rv);
     this.a0[i] = k.alpha * alphaMul;
     this.fadeIn[i] = k.fadeIn ?? 0.1;
     this.rot[i] = Math.random() * Math.PI * 2;
@@ -242,6 +273,8 @@ export class BillboardPool {
     this.drag[i] = k.drag ?? 1;
     this.windK[i] = k.wind ?? 1;
     this.turb[i] = k.turb ?? 0.5;
+    this.shear[i] = k.shear ?? 0;
+    this.colK[i] = 1 / (k.colT ?? 1);
   }
 
   update(dt, cam, wind) {
@@ -251,6 +284,7 @@ export class BillboardPool {
     const { p, v, age, life, keys } = this;
     const n = this.max;
     const wx = wind.x, wz = wind.z;
+    const wl = Math.hypot(wx, wz) || 1, sx = wx / wl, sz = wz / wl;
     const cx = cam.x, cy = cam.y, cz = cam.z;
     let live = 0;
     for (let i = 0; i < n; i++) {
@@ -267,6 +301,14 @@ export class BillboardPool {
       v[i3 + 2] += (wz * wk - v[i3 + 2]) * k + Math.cos(ph * 0.9) * tb * dt;
       v[i3 + 1] += -v[i3 + 1] * k * 0.6 + this.buoy[i] * dt;
       p[i3] += v[i3] * dt; p[i3 + 1] += v[i3 + 1] * dt; p[i3 + 2] += v[i3 + 2] * dt;
+      const sh = this.shear[i];
+      if (sh > 0) {
+        // wind shear: older (higher) smoke is carried off sideways, with a per-puff
+        // spread so the plume fans out instead of rising as one column
+        const d = sh * Math.min(1, a * 0.6) * (0.6 + 0.8 * (this.frame[i] % 1)) * dt;
+        p[i3] += sx * d - sz * d * (this.frame[i] % 1 - 0.5) * 0.8;
+        p[i3 + 2] += sz * d + sx * d * (this.frame[i] % 1 - 0.5) * 0.8;
+      }
       this.rot[i] += this.rotV[i] * dt;
       if (this.sorted) {
         const dx = p[i3] - cx, dy = p[i3 + 1] - cy, dz = p[i3 + 2] - cz;
@@ -296,10 +338,10 @@ export class BillboardPool {
       const o4 = j * 4, o3 = j * 3;
       PS[o4] = p[i3]; PS[o4 + 1] = p[i3 + 1]; PS[o4 + 2] = p[i3 + 2]; PS[o4 + 3] = r;
       PR[o4] = this.rot[i]; PR[o4 + 1] = alpha; PR[o4 + 2] = this.frame[i]; PR[o4 + 3] = this.erode[i] * t * Math.sqrt(t);
-      const c1 = this.col, c2 = this.col2;
-      CO[o3] = c1[i3] + (c2[i3] - c1[i3]) * t;
-      CO[o3 + 1] = c1[i3 + 1] + (c2[i3 + 1] - c1[i3 + 1]) * t;
-      CO[o3 + 2] = c1[i3 + 2] + (c2[i3 + 2] - c1[i3 + 2]) * t;
+      const c1 = this.col, c2 = this.col2, tc = Math.min(1, t * this.colK[i]);
+      CO[o3] = c1[i3] + (c2[i3] - c1[i3]) * tc;
+      CO[o3 + 1] = c1[i3 + 1] + (c2[i3 + 1] - c1[i3 + 1]) * tc;
+      CO[o3 + 2] = c1[i3 + 2] + (c2[i3 + 2] - c1[i3 + 2]) * tc;
       j++;
     }
     flush(this.aPosSize, j); flush(this.aParams, j); flush(this.aColor, j);

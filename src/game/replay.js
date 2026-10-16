@@ -2,6 +2,8 @@
 
 const WHEEL_F = 12; // center3 fwd3 up3 spin detached, pad
 const FRAME_F = 12; // c f u r
+const EXTRA_F = 8;  // speed, brake, glass mask, plastic (crash) amount, scrape speed, scrape xyz
+const PANEL_KEYS = ['windshield', 'rearGlass', 'leftGlass', 'rightGlass'];
 
 export class Recorder {
   constructor(seconds = 12, fps = 60) {
@@ -17,7 +19,7 @@ export class Recorder {
     for (const v of vehicles) {
       let t = this.tracks.get(v);
       if (!t) {
-        t = { nodes: new Float32Array(v.body.n * 3 * this.max), wheels: new Float32Array(4 * WHEEL_F * this.max), frames: new Float32Array(FRAME_F * this.max), extra: new Float32Array(2 * this.max), born: this.count };
+        t = { nodes: new Float32Array(v.body.n * 3 * this.max), wheels: new Float32Array(4 * WHEEL_F * this.max), frames: new Float32Array(FRAME_F * this.max), extra: new Float32Array(EXTRA_F * this.max), born: this.count };
         this.tracks.set(v, t);
       }
       const n3 = v.body.n * 3;
@@ -30,8 +32,15 @@ export class Recorder {
       });
       const fo = this.head * FRAME_F, fr = v.frame;
       t.frames.set(fr.c, fo); t.frames.set(fr.f, fo + 3); t.frames.set(fr.u, fo + 6); t.frames.set(fr.r, fo + 9);
-      t.extra[this.head * 2] = v.speed;
-      t.extra[this.head * 2 + 1] = v.brkEff;
+      const eo = this.head * EXTRA_F, sc = v.body.scrapes;
+      let mask = 0;
+      for (let k = 0; k < 4; k++) if (v.glass[PANEL_KEYS[k]]) mask |= 1 << k;
+      t.extra[eo] = v.speed;
+      t.extra[eo + 1] = v.brkEff;
+      t.extra[eo + 2] = mask;
+      t.extra[eo + 3] = v.body.plasticFrame || 0;
+      t.extra[eo + 4] = sc.length >= 4 ? sc[3] : 0;
+      if (sc.length >= 4) { t.extra[eo + 5] = sc[0]; t.extra[eo + 6] = sc[1]; t.extra[eo + 7] = sc[2]; }
     }
     this.head = (this.head + 1) % this.max;
     this.count = Math.min(this.count + 1, this.max);
@@ -68,8 +77,33 @@ export class Recorder {
       frame.u[k] = t.frames[f0 + 6 + k] * (1 - a) + t.frames[f1 + 6 + k] * a;
       frame.r[k] = t.frames[f0 + 9 + k] * (1 - a) + t.frames[f1 + 9 + k] * a;
     }
-    out.speed = t.extra[s0 * 2];
-    out.brake = t.extra[s0 * 2 + 1];
+    out.speed = t.extra[s0 * EXTRA_F];
+    out.brake = t.extra[s0 * EXTRA_F + 1];
+    out.glass = t.extra[s0 * EXTRA_F + 2];
+    return out;
+  }
+
+  // crash/scrape/glass events of recorded frame i (integer), for re-emitting effects in replay
+  events(v, i, out) {
+    const t = this.tracks.get(v);
+    if (!t || i < 1 || i >= this.count) return null;
+    const s = this.slot(i), p = this.slot(i - 1), eo = s * EXTRA_F, f0 = p * FRAME_F, f1 = s * FRAME_F;
+    out.glass = t.extra[eo + 2];
+    out.glassBefore = t.extra[p * EXTRA_F + 2];
+    out.plastic = t.extra[eo + 3];
+    out.scrape = t.extra[eo + 4];
+    out.sx = t.extra[eo + 5]; out.sy = t.extra[eo + 6]; out.sz = t.extra[eo + 7];
+    out.cx = t.frames[f1]; out.cy = t.frames[f1 + 1]; out.cz = t.frames[f1 + 2];
+    out.ux = t.frames[f1 + 6]; out.uy = t.frames[f1 + 7]; out.uz = t.frames[f1 + 8];
+    // velocity from the recorded frame centres (recorded at 60 Hz)
+    out.vx = (t.frames[f1] - t.frames[f0]) * 60;
+    out.vy = (t.frames[f1 + 1] - t.frames[f0 + 1]) * 60;
+    out.vz = (t.frames[f1 + 2] - t.frames[f0 + 2]) * 60;
+    return out;
+  }
+
+  static glassState(mask, out) {
+    for (let k = 0; k < 4; k++) out[PANEL_KEYS[k]] = !!(mask & (1 << k));
     return out;
   }
 }

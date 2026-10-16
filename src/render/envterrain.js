@@ -185,15 +185,20 @@ function branch(b, x0, y0, z0, x1, y1, z1, r0) {
   b.add(solidUV(g));
 }
 
-// Alpha-tested leaf cards scattered through an ellipsoidal crown around a dark
-// core. Normals point away from the crown centre (soft, volumetric light) and
-// the colour darkens toward the bottom and the inside.
-function cardCrown(b, r, o) {
-  const { cx, cy, cz, rx, ry, rz, cards, size, col, core = 0.55 } = o;
-  const coreG = jitter(new THREE.IcosahedronGeometry(1, 0).scale(rx * 0.5, ry * 0.5, rz * 0.5).translate(cx, cy, cz), 0.25, r);
-  const coreCol = lin('#2b3f1d').map((v, i) => v * col[i] * core * 1.6);
+// Alpha-tested leaf cards scattered through an ellipsoidal crown around a small
+// core. Each card faces roughly outward (within ~40 degrees, with a random
+// twist), so few are seen edge-on; normals point away from the crown centre
+// (soft, volumetric light) and the colour darkens toward the bottom and inside.
+// density scales the card count (cards shrink to keep the same coverage).
+function cardCrown(b, r, o, density = 1) {
+  const { cx, cy, cz, rx, ry, rz, col, core = 0.55 } = o;
+  const cards = Math.round(o.cards * density), size = o.size / Math.sqrt(density) * (density > 1 ? 1.15 : 1);
+  // small core in the crown's own colour, so its facets don't show between cards
+  const coreG = jitter(new THREE.IcosahedronGeometry(1, 0).scale(rx * 0.35, ry * 0.35, rz * 0.35).translate(cx, cy, cz), 0.15, r);
+  const coreCol = lin('#34491f').map((v, i) => v * col[i] * (0.6 + core * 0.4));
   b.add(solidUV(canopy(coreG, cx, cy, cz, coreCol, r, 0.6)));
-  const q = new THREE.Quaternion(), e = new THREE.Euler();
+  const q = new THREE.Quaternion(), tw = new THREE.Quaternion();
+  const Z = new THREE.Vector3(0, 0, 1), out = new THREE.Vector3();
   for (let k = 0; k < cards; k++) {
     let u, v, w, l2;
     do { u = r() * 2 - 1; v = r() * 2 - 1; w = r() * 2 - 1; l2 = u * u + v * v + w * w; } while (l2 > 1 || l2 < 0.2);
@@ -202,7 +207,13 @@ function cardCrown(b, r, o) {
     const g = new THREE.PlaneGeometry(sz, sz);
     const uv = g.attributes.uv;
     for (let i = 0; i < uv.count; i++) uv.setX(i, uv.getX(i) * 0.5);
-    g.applyQuaternion(q.setFromEuler(e.set(r() * Math.PI, r() * Math.PI * 2, r() * Math.PI))).translate(px, py, pz);
+    // outward direction (flattened a little, the crown is mostly seen from the
+    // side) plus a random tilt of up to ~40 degrees
+    out.set(u / rx, v / ry * 0.7, w / rz).normalize();
+    out.x += (r() - 0.5) * 1.2; out.y += (r() - 0.5) * 1.2; out.z += (r() - 0.5) * 1.2;
+    out.normalize();
+    q.setFromUnitVectors(Z, out).multiply(tw.setFromAxisAngle(Z, r() * Math.PI * 2));
+    g.applyQuaternion(q).translate(px, py, pz);
     const p = g.attributes.position, n = p.count;
     const N = new Float32Array(n * 3), C = new Float32Array(n * 3);
     for (let i = 0; i < n; i++) {
@@ -211,7 +222,7 @@ function cardCrown(b, r, o) {
       const nx = dx / rx, ny = dy / ry + 0.25, nz = dz / rz, nl = Math.hypot(nx, ny, nz) || 1;
       N[i * 3] = nx / nl; N[i * 3 + 1] = ny / nl; N[i * 3 + 2] = nz / nl;
       const t = Math.min(1, Math.max(0, (dy / ry + 1) / 2));
-      const k2 = (0.55 + 0.45 * t) * (0.7 + 0.3 * Math.min(1, l));
+      const k2 = (0.62 + 0.25 * t) * (0.7 + 0.3 * Math.min(1, l));
       C[i * 3] = col[0] * k2; C[i * 3 + 1] = col[1] * k2; C[i * 3 + 2] = col[2] * k2;
     }
     g.setAttribute('normal', new THREE.BufferAttribute(N, 3));
@@ -237,7 +248,7 @@ function spruce(r, lod) {
     const f = t / (tiers - 1);
     const rad = (2.7 - f * 2.0) * (0.9 + r() * 0.2), y0 = 1.5 + f * 7.6, h = 3.4 - f * 0.9;
     // star-shaped, drooping tiers read as branches rather than smooth cones
-    const cg = new THREE.ConeGeometry(rad, h, lod ? 6 : 12, 1, false);
+    const cg = new THREE.ConeGeometry(rad, h, lod ? 6 : 12, 1, !!lod);
     const cp = cg.attributes.position, tw = r() * 6.28, pts = lod ? 3 : 6;
     for (let i = 0; i < cp.count; i++) {
       const x = cp.getX(i), z = cp.getZ(i), rr = Math.hypot(x, z);
@@ -258,7 +269,7 @@ function pine(r, lod, cards) {
   if (cards) {
     branch(b, 0, 5.5, 0, 1.8, 8.4, 0.4, 0.12);
     branch(b, 0, 6.4, 0, -1.5, 9.2, -0.9, 0.1);
-    cardCrown(b, r, { cx: 0, cy: 9.0, cz: 0, rx: 3.0, ry: 3.0, rz: 3.0, cards: 18, size: 2.8, col: [0.62, 0.72, 0.6], core: 0.8 });
+    cardCrown(b, r, { cx: 0, cy: 9.0, cz: 0, rx: 3.0, ry: 3.0, rz: 3.0, cards: 18, size: 2.8, col: [0.62, 0.72, 0.6], core: 0.8 }, cards);
     return b.build();
   }
   const col = lin('#2f4a27');
@@ -282,11 +293,11 @@ function broadleaf(r, lod, cards) {
       const a = k * 2.1 + r();
       branch(b, 0, 2.6 + k * 0.4, 0, Math.cos(a) * 2.0, 5.2 + r(), Math.sin(a) * 2.0, 0.13);
     }
-    cardCrown(b, r, { cx: 0, cy: 6.3, cz: 0, rx: 3.5, ry: 3.0, rz: 3.5, cards: 22, size: 3.2, col: [1, 1, 0.92] });
+    cardCrown(b, r, { cx: 0, cy: 6.3, cz: 0, rx: 3.5, ry: 3.0, rz: 3.5, cards: 22, size: 3.2, col: [1, 1, 0.92] }, cards);
     return b.build();
   }
   const col = lin('#46642d');
-  const blobs = lod ? 4 : 9;
+  const blobs = lod ? 3 : 9;
   for (let k = 0; k < blobs; k++) {
     const a = k * 2.4 + r() * 0.8;
     const t = k === 0 ? 0.5 : (k % 3) / 2.5 + r() * 0.2;
@@ -303,7 +314,7 @@ function poplar(r, lod, cards) {
   const b = new Batch();
   b.add(trunk(2.2, 0.25, 0.16, lod ? 4 : 5));
   if (cards) {
-    cardCrown(b, r, { cx: 0, cy: 8.2, cz: 0, rx: 1.7, ry: 5.8, rz: 1.7, cards: 18, size: 2.3, col: [0.95, 1, 0.9] });
+    cardCrown(b, r, { cx: 0, cy: 8.2, cz: 0, rx: 1.7, ry: 5.8, rz: 1.7, cards: 18, size: 2.3, col: [0.95, 1, 0.9] }, cards);
     return b.build();
   }
   const col = lin('#45632e');
@@ -321,7 +332,7 @@ function poplar(r, lod, cards) {
 function bush(r, cards) {
   const b = new Batch();
   if (cards) {
-    cardCrown(b, r, { cx: 0, cy: 0.75, cz: 0, rx: 1.25, ry: 0.85, rz: 1.25, cards: 9, size: 1.5, col: [1, 1, 0.9] });
+    cardCrown(b, r, { cx: 0, cy: 0.75, cz: 0, rx: 1.25, ry: 0.85, rz: 1.25, cards: 9, size: 1.5, col: [1, 1, 0.9] }, cards);
     return b.build();
   }
   const col = lin('#4d6c33');
@@ -375,7 +386,7 @@ export function buildFlora(env, TR, A) {
     inner: q === 'high' ? 1300 : q === 'medium' ? 900 : 450,
     outer: q === 'high' ? 3000 : q === 'medium' ? 2000 : 900,
     bush: q === 'high' ? 420 : q === 'medium' ? 260 : 110,
-    tuft: q === 'high' ? 5200 : q === 'medium' ? 2000 : 0,
+    tuft: q === 'high' ? 5200 : q === 'medium' ? 700 : 0,
   };
   const pts = world.track.pts;
   // coarse grid of distance to the track centre line for fast rejection
@@ -463,7 +474,9 @@ export function buildFlora(env, TR, A) {
     placed++;
   }
   const treeMat = env.M.foliage, farMat = env.M.foliageFar;
-  const cards = hiQ; // leaf-card crowns need the alpha-tested foliage material
+  // leaf-card crowns need the alpha-tested foliage material (0 = solid crowns);
+  // the number is the card density: many small cards on high, fewer on medium
+  const cards = q === 'high' ? 2.2 : q === 'medium' ? 1.4 : 0;
   for (const sp of species) {
     const gi = sp.make(rng(7 + species.indexOf(sp)), false, cards);
     const go = sp.make(rng(17 + species.indexOf(sp)), true, false);

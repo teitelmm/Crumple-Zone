@@ -74,9 +74,59 @@ class Game {
     this.resize();
     this.ui.showMenu(true);
     this.showcase(this.ui.sel.car);
+    this._focus = new THREE.Vector3();
+    this._fx = {};
+    this._glass = {};
+    this.started = false;
+    // compile every program (incl. the effect pools that otherwise link on the first
+    // spark or crash) behind the loading screen, then draw the first frame
+    this.warmup().finally(() => {
+      this.started = true;
+      this.last = performance.now();
+      requestAnimationFrame((t) => this.frame(t));
+    });
+  }
+
+  async warmup() {
+    const fx = this.effects, cam = this.camera;
+    try {
+      this.rig.update(1 / 60, this.showcaseCar.vehicle.frame, 0, true);
+      cam.updateMatrixWorld();
+      // one of each effect, a few metres in front of the camera, so every pool is visible
+      const d = new THREE.Vector3(); cam.getWorldDirection(d);
+      const x = cam.position.x + d.x * 6, z = cam.position.z + d.z * 6, y = 0.3;
+      fx.spark(x, y, z, 1, 1, 0);
+      fx.glass(x, y + 0.5, z, 0, 1, 0);
+      fx.debrisDust(x, y, z, 10);
+      fx.tyreSmoke(x, 0, z, 1, 0, 1, 'asphalt');
+      for (let k = 0; k < 8; k++) fx.tyreSmoke(x, 0, z, 1, 0, 1, 'dirt');
+      fx.steam(x, y, z, true);
+      fx.steam(x, y, z, false);
+      for (let k = 0; k < 3; k++) fx.skids.add(-1, x + k * 0.3, 0.01, z, 0, 1, 0.2, 1);
+      fx.update(1 / 60);
+      const r = this.renderer;
+      if (r.compileAsync) {
+        // renderer.compile() walks every object (visible or not) and can't handle
+        // material arrays with empty slots (the car bodies), so those arrays are
+        // swapped for packed copies just for the compile call
+        const swapped = [];
+        this.scene.traverse((o) => {
+          if (Array.isArray(o.material) && o.material.some((m) => !m)) { swapped.push([o, o.material]); o.material = o.material.filter(Boolean); }
+        });
+        let compiling;
+        try { compiling = r.compileAsync(this.scene, cam); } finally { for (const [o, m] of swapped) o.material = m; }
+        // never let a driver that never reports "ready" hold the game hostage
+        await Promise.race([compiling, new Promise((res) => setTimeout(res, 8000))]);
+      }
+      // the first real frame also links the post-processing and shadow programs
+      this.view.update(0, cam, this._focus.fromArray(this.showcaseCar.vehicle.frame.c));
+      this.view.render(cam);
+    } catch (err) {
+      console.warn('shader warm-up skipped:', err);
+    }
+    fx.skids.add(-1, 0, 0, 0, 0, 0, 0, 0);
+    fx.clear();
     document.getElementById('loading').hidden = true;
-    this.last = performance.now();
-    requestAnimationFrame((t) => this.frame(t));
   }
 
   resize() {
@@ -196,9 +246,35 @@ class Game {
   }
 
   respawn(e, spot) {
+    spot = this.clearSpot(e.vehicle, spot);
     e.vehicle.spawn(spot.x, spot.z, spot.heading, 0);
     e.view.resetVisualState();
     this.rig.snap();
+  }
+
+  // spawn() places the car at ground level: if that footprint overlaps a collider
+  // (e.g. reset while on a ramp), back off along the heading, then try ahead and to the sides
+  clearSpot(v, spot) {
+    const hl = v.spec.dims.length / 2 + 0.3, hw = v.spec.dims.width / 2 + 0.3;
+    const out = [0, 0, 0];
+    const blocked = (x, z) => {
+      const c = Math.cos(spot.heading), s = Math.sin(spot.heading);
+      for (const col of this.physics.colliders) {
+        for (let i = -2; i <= 2; i++) for (let j = -1; j <= 1; j++) for (const y of [0.35, 1.0]) {
+          const lx = i * hl / 2, lz = j * hw;
+          if (col.contact(x + c * lx - s * lz, y, z + s * lx + c * lz, 0.3, out) > 0) return true;
+        }
+      }
+      return false;
+    };
+    if (!blocked(spot.x, spot.z)) return spot;
+    const fx = Math.cos(spot.heading), fz = Math.sin(spot.heading);
+    const dirs = [[-fx, -fz], [fx, fz], [-fz, fx], [fz, -fx]];
+    for (let d = 1; d <= 30; d++) for (const [dx, dz] of dirs) {
+      const x = spot.x + dx * d, z = spot.z + dz * d;
+      if (!blocked(x, z)) return { ...spot, x, z };
+    }
+    return spot;
   }
 
   teleport(spot) { if (this.player) this.respawn(this.player, spot); }
@@ -226,7 +302,9 @@ class Game {
   startReplay({ from = 0, speed = 0.5, cinematic = false, then = null } = {}) {
     if (this.recorder.count < 2) { then?.(); return; }
     this.state = 'replay';
-    this.replay = { t: from, speed, cinematic, then, end: this.recorder.count - 1 };
+    this.replay = { t: from, speed, cinematic, then, end: this.recorder.count - 1, fxFrame: Math.floor(from) };
+    // smoke and sparks from the end of the run would hang over the start of the replay
+    this.effects.clear();
     this.audio.silence();
     this.ui.showReplay(true, `×${speed}`);
     document.getElementById('hud').classList.add('replaying');
@@ -256,13 +334,47 @@ class Game {
     r.t += dt * 60 * r.speed;
     if (r.t >= r.end) { this.stopReplay(); return; }
     let camFrame = null, camSpeed = 0;
+    const toFrame = Math.floor(r.t);
     for (const e of this.cars) {
-      const s = this.recorder.sample(e.vehicle, r.t, e.replayBuf || (e.replayBuf = {}));
+      const v = e.vehicle;
+      const s = this.recorder.sample(v, r.t, e.replayBuf || (e.replayBuf = {}));
       if (!s) continue;
+      for (let i = r.fxFrame + 1; i <= toFrame; i++) this.replayEffects(e, i);
+      // draw the recorded glass and brake-light state, not the live one
+      const liveGlass = v.glass, liveBrk = v.brkEff;
+      v.glass = Recorder.glassState(s.glass, this._glass);
+      v.brkEff = s.brake;
       e.view.update(false, s.pos, s.wheels);
+      v.glass = liveGlass; v.brkEff = liveBrk;
       if (e === this.player) { camFrame = s.frame; camSpeed = s.speed; }
     }
+    r.fxFrame = Math.max(r.fxFrame, toFrame);
+    this.effects.update(dt * r.speed);
     if (camFrame) this.rig.update(dt, camFrame, camSpeed, r.cinematic);
+  }
+
+  // effects re-emitted from recorded frame i of a car (crash debris, sparks, glass)
+  replayEffects(e, i) {
+    const ev = this.recorder.events(e.vehicle, i, this._fx);
+    if (!ev) return;
+    const fx = this.effects, lowQ = this.quality === 'low';
+    let vx = ev.vx, vy = ev.vy, vz = ev.vz;
+    const vl = Math.hypot(vx, vy, vz);
+    if (vl > 80) { vx *= 80 / vl; vy *= 80 / vl; vz *= 80 / vl; } // first frame of a newly recorded car
+    if (ev.plastic > 0.25) fx.debrisDust(ev.cx, ev.cy, ev.cz, lowQ ? 4 : 10);
+    if (ev.scrape > 0) this.scrapeFx(ev.sx, ev.sy, ev.sz, vx, vz, lowQ ? 1 : 3);
+    if ((ev.glass & ~ev.glassBefore) !== 0) fx.glass(ev.cx + ev.ux, ev.cy + ev.uy * 0.9, ev.cz + ev.uz, vx, vy, vz);
+  }
+
+  // metal sparks on hard ground and walls; on dirt or grass the body ploughs up dust instead
+  scrapeFx(x, y, z, vx, vz, n) {
+    const fx = this.effects;
+    const ground = this.world.surfaceAt(x, z).type;
+    if ((ground === 'dirt' || ground === 'grass') && y < 0.35) {
+      if (Math.random() < 0.35) fx.tyreSmoke(x, 0, z, vx, vz, 0.4, ground);
+      return;
+    }
+    for (let j = 0; j < n; j++) fx.spark(x, y, z, vx * 0.5, 0.5, vz * 0.5);
   }
 
   // ------------------------------------------------------------ simulation
@@ -325,7 +437,7 @@ class Game {
       }
       // sparks from metal on the ground or walls
       const sc = v.body.scrapes;
-      for (let k = 0; k < sc.length; k += 4) for (let j = 0; j < (lowQ ? 1 : 3); j++) fx.spark(sc[k], sc[k + 1], sc[k + 2], v.vel[0] * 0.5, 0.5, v.vel[2] * 0.5);
+      for (let k = 0; k < sc.length; k += 4) this.scrapeFx(sc[k], sc[k + 1], sc[k + 2], v.vel[0], v.vel[2], lowQ ? 1 : 3);
       // tyres
       v.wheels.forEach((w, i) => {
         const key = e.id * 4 + i;
@@ -365,7 +477,7 @@ class Game {
       }
     }
     const focus = this.state === 'menu' ? this.showcaseCar : this.player;
-    this.view.update(dt, this.camera, focus ? new THREE.Vector3(...focus.vehicle.frame.c) : null);
+    this.view.update(dt, this.camera, focus ? this._focus.fromArray(focus.vehicle.frame.c) : null);
     if (this.state === 'play' && this.player) {
       this.audio.update(this.player.vehicle, this.timeScale, this.paused);
       this.ui.update(dt, this.player.vehicle, this.mode);

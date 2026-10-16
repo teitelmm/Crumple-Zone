@@ -3,6 +3,8 @@
 // Public API (used by main.js) is unchanged; the systems live in fx*.js.
 import * as THREE from 'three';
 import { makeWheelMesh } from './carview.js';
+import { makeCarMaterials, CRACKED } from './carmaterials.js';
+import { CARS } from '../vehicle/specs.js';
 import { makePuffAtlas, makeNoiseTexture, makeGlintTexture, linearRGB } from './fxtextures.js';
 import { BillboardPool, StreakPool } from './fxparticles.js';
 import { RigidPool, chunkGeometry, shardGeometry } from './fxdebris.js';
@@ -12,17 +14,20 @@ import { SkidMarks } from './fxskids.js';
 // overdraw down; 'high' gets detail noise in the smoke, shadows on debris and more glints.
 const QUALITY = {
   high: { smoke: 640, glints: 72, sparks: 600, shards: 420, plastic: 160, metal: 90, skids: 4096, size: 1, alpha: 1, detail: true, bulge: true, sparkPerCall: 2, glassPerEvent: 110, glassBurst: 7, glintFly: 2.5, glintRest: 0.04, debrisMul: 0.8, debrisRate: 160, shadows: true, hotspots: 0.3, clods: 160, clodRate: 0.35, tex: 128 },
-  medium: { smoke: 480, glints: 48, sparks: 400, shards: 280, plastic: 110, metal: 60, skids: 3072, size: 0.85, alpha: 1.05, detail: true, bulge: true, sparkPerCall: 1, glassPerEvent: 75, glassBurst: 5, glintFly: 1.5, glintRest: 0.02, debrisMul: 0.7, debrisRate: 110, shadows: false, hotspots: 0.2, clods: 100, clodRate: 0.25, tex: 128 },
+  medium: { smoke: 360, glints: 48, sparks: 400, shards: 280, plastic: 110, metal: 60, skids: 3072, size: 0.7, alpha: 1.1, detail: false, bulge: false, sparkPerCall: 1, glassPerEvent: 75, glassBurst: 5, glintFly: 1.5, glintRest: 0.02, debrisMul: 0.7, debrisRate: 110, shadows: false, hotspots: 0.2, clods: 100, clodRate: 0.25, tex: 128 },
   low: { smoke: 320, glints: 24, sparks: 200, shards: 140, plastic: 60, metal: 30, skids: 2048, size: 0.65, alpha: 1.2, detail: false, bulge: false, sparkPerCall: 1, glassPerEvent: 36, glassBurst: 4, glintFly: 0.8, glintRest: 0, debrisMul: 0.6, debrisRate: 60, shadows: false, hotspots: 0, clods: 50, clodRate: 0.15, tex: 64 },
 };
 
 // Particle presets (life range s, start/end radius m, peak opacity, fade-in s,
 // edge erosion, buoyancy m/s^2, air drag 1/s, wind coupling, swirl, spin rad/s).
+// Optional: rVar (end-radius spread, +-fraction), shear (m/s drift along the wind
+// that grows with age, so tall plumes lean and fan out), colT (fraction of life
+// over which the colour goes from col to col2; default the whole life).
 const P_TYRE = { life: [2.0, 3.2], r0: 0.32, r1: 2.3, alpha: 0.5, fadeIn: 0.2, erode: 0.55, buoy: 0.22, drag: 1.3, wind: 1, turb: 0.6, spin: 0.7 };
 const P_DUST = { life: [1.8, 2.8], r0: 0.38, r1: 2.1, alpha: 0.6, fadeIn: 0.08, erode: 0.5, buoy: -0.04, drag: 1.8, wind: 0.8, turb: 0.4, spin: 0.5 };
 const P_STEAM = { life: [0.9, 1.5], r0: 0.12, r1: 1.0, alpha: 0.45, fadeIn: 0.06, erode: 0.75, buoy: 1.4, drag: 1.0, wind: 1.2, turb: 1.2, spin: 1.2 };
-const P_OIL = { life: [2.4, 3.6], r0: 0.18, r1: 2.6, alpha: 0.34, fadeIn: 0.1, erode: 0.55, buoy: 0.9, drag: 0.9, wind: 1.4, turb: 1.0, spin: 0.6 };
-const P_CRASH = { life: [1.6, 2.6], r0: 0.5, r1: 2.6, alpha: 0.32, fadeIn: 0.05, erode: 0.5, buoy: 0.05, drag: 2.2, wind: 0.8, turb: 0.5, spin: 0.5 };
+const P_OIL = { life: [2.4, 3.6], r0: 0.18, r1: 2.0, rVar: 0.4, alpha: 0.36, fadeIn: 0.1, erode: 0.55, buoy: 0.75, drag: 0.9, wind: 1.4, turb: 1.6, spin: 0.6, shear: 1.2, colT: 0.6 };
+const P_CRASH = { life: [1.6, 2.6], r0: 0.5, r1: 2.6, alpha: 0.22, fadeIn: 0.05, erode: 0.5, buoy: 0.05, drag: 2.2, wind: 0.8, turb: 0.5, spin: 0.5 };
 const P_WHEEL = { life: [1.2, 2.0], r0: 0.25, r1: 1.3, alpha: 0.3, fadeIn: 0.08, erode: 0.5, buoy: 0.05, drag: 1.8, wind: 0.8, turb: 0.4, spin: 0.5 };
 const P_GLINT = { life: [0.08, 0.2], r0: 0.05, r1: 0.075, alpha: 1, fadeIn: 0.025, erode: 0, buoy: 0, drag: 0, wind: 0, turb: 0, spin: 2 };
 const P_BURST = { life: [0.08, 0.2], r0: 0.06, r1: 0.09, alpha: 1, fadeIn: 0.02, erode: 0, buoy: 0, drag: 0, wind: 0, turb: 0, spin: 1 };
@@ -102,7 +107,7 @@ export class Effects {
     const Q = this.Q = QUALITY[quality] || QUALITY.high;
     const puff = makePuffAtlas(Q.tex), noise = makeNoiseTexture(Q.tex), glintTex = makeGlintTexture();
 
-    this.smoke = new BillboardPool(scene, { max: Q.smoke, map: puff, detail: Q.detail ? noise : null, bulge: Q.bulge, lit: true, lift: 0.65, nearFade: [0.3, 2.2], renderOrder: 2 });
+    this.smoke = new BillboardPool(scene, { max: Q.smoke, map: puff, detail: Q.detail ? noise : null, bulge: Q.bulge, lit: true, lift: 0.65, nearFade: [0.6, 3.5], maxScreen: true, renderOrder: 2 });
     this.glints = new BillboardPool(scene, { max: Q.glints, map: glintTex, additive: true, nearFade: [0.1, 0.4], renderOrder: 4 });
     this.sparks = new StreakPool(scene, Q.sparks);
 
@@ -140,6 +145,77 @@ export class Effects {
 
     const glint = (x, y, z, vx, vy, vz) => this.glints.emit(x, y, z, vx, vy, vz, P_GLINT, 1, 1, C_GLINT);
     this.glassGlint = { rateFly: Q.glintFly, rateRest: Q.glintRest, emit: glint };
+
+    // engine smoke / steam sources, to thin the plume out once a wreck stands still
+    this.sources = [];
+
+    // Shader warm-up: every pool starts hidden, so without this their programs (and
+    // the debris shadow-depth variants, and the cracked-glass material) would compile
+    // lazily on the frame of the first crash. For the first few frames after start
+    // and after every clear() the empty pools are drawn with zero instances, which
+    // builds the programs while the game is loading or a mode is starting.
+    const dummyGeo = new THREE.BufferGeometry();
+    dummyGeo.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(9), 3));
+    dummyGeo.setAttribute('normal', new THREE.Float32BufferAttribute([0, 1, 0, 0, 1, 0, 0, 1, 0], 3));
+    dummyGeo.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(6), 2));
+    let cracked = null;
+    try {
+      const spec = CARS.a4 || CARS[Object.keys(CARS)[0]];
+      const set = makeCarMaterials(spec, quality, spec.color);
+      cracked = set.list[CRACKED];
+      set.release();
+    } catch (e) { cracked = null; }
+    this.crackedDummy = new THREE.Mesh(dummyGeo, cracked || new THREE.MeshBasicMaterial());
+    this.crackedDummy.frustumCulled = false;
+    this.crackedDummy.receiveShadow = true;
+    this.crackedDummy.visible = false;
+    if (cracked) scene.add(this.crackedDummy);
+    const bb = (p) => ({ mesh: p.mesh, empty: () => p.live === 0, zero: () => { p.geo.instanceCount = 0; } });
+    const rg = (p) => ({ mesh: p.mesh, empty: () => p.active === 0, zero: () => { p.mesh.count = 0; } });
+    this.warmList = [bb(this.smoke), bb(this.glints), bb(this.sparks), rg(this.shards), rg(this.plastic), rg(this.metal), rg(this.clods),
+      { mesh: this.skids.mesh, empty: () => this.skids.used === 0, zero: () => this.skids.geo.setDrawRange(0, 0) }];
+    if (cracked) this.warmList.push({ mesh: this.crackedDummy, empty: () => true, zero: () => {} });
+    this.forced = [];
+    this.warmFrames = 3;
+    this.forceWarm();
+  }
+
+  forceWarm() {
+    for (const w of this.warmList) {
+      if (w.mesh.visible || !w.empty()) continue;
+      w.zero();
+      w.mesh.visible = true;
+      this.forced.push(w);
+    }
+  }
+
+  unforceWarm() {
+    for (const w of this.forced) if (w.empty()) w.mesh.visible = false;
+    this.forced.length = 0;
+  }
+
+  // Engine smoke and steam come from a car's nose every few frames. A wreck that
+  // stands still keeps emitting into the same column, which piles up into an opaque
+  // sheet; track where each source is and taper it off after ~8 s in one spot.
+  sourceGate(x, z) {
+    const t = this.time, src = this.sources;
+    let s = null;
+    for (const c of src) {
+      if (t - c.last > 1) continue;
+      if ((c.x - x) * (c.x - x) + (c.z - z) * (c.z - z) < 1.2 * 1.2) { s = c; break; }
+    }
+    if (!s) {
+      s = src.find(c => t - c.last > 1);
+      if (!s) { if (src.length >= 16) src.shift(); s = {}; src.push(s); }
+      s.x = x; s.z = z; s.t0 = s.tA = t;
+    } else if ((s.x - x) * (s.x - x) + (s.z - z) * (s.z - z) > 1) {
+      // moved a metre: re-anchor, and restart the clock unless it only crept there
+      if (t - s.tA < 4) s.t0 = t;
+      s.x = x; s.z = z; s.tA = t;
+    }
+    s.last = t;
+    const still = t - s.t0;
+    return still < 8 ? 1 : Math.max(0, 1 - (still - 8) / 4);
   }
 
   setViewport(h, fov) {
@@ -172,11 +248,17 @@ export class Effects {
 
   steam(x, y, z, dark) {
     const Q = this.Q;
+    const gate = this.sourceGate(x, z);
     if (dark) {
-      this.smoke.emit(x + (Math.random() - 0.5) * 0.3, y, z + (Math.random() - 0.5) * 0.3,
-        (Math.random() - 0.5) * 0.6, 1.1 + Math.random() * 0.9, (Math.random() - 0.5) * 0.6,
+      // main.js calls this on about half the frames (a fifth on low); oil smoke only
+      // needs ~0.3 puffs per frame (0.15 on low), more just stacks into a flat veil
+      // (a dead engine on a parked wreck keeps a faint wisp going)
+      if (Math.random() >= (this.quality === 'low' ? 0.75 : 0.6) * Math.max(0.12, gate)) return;
+      this.smoke.emit(x + (Math.random() - 0.5) * 0.4, y, z + (Math.random() - 0.5) * 0.4,
+        (Math.random() - 0.5) * 1.2, 0.9 + Math.random() * 0.8, (Math.random() - 0.5) * 1.2,
         P_OIL, Q.size, Q.alpha, C_OIL, C_OIL2);
     } else {
+      if (gate < 1 && Math.random() >= gate) return;
       this.smoke.emit(x + (Math.random() - 0.5) * 0.3, y, z + (Math.random() - 0.5) * 0.3,
         (Math.random() - 0.5) * 0.8, 1.6 + Math.random() * 1.2, (Math.random() - 0.5) * 0.8,
         P_STEAM, Q.size, Q.alpha, C_STEAM);
@@ -279,6 +361,7 @@ export class Effects {
   }
 
   update(dt) {
+    if (this.forced.length) this.unforceWarm();
     this.time += dt;
     const t = this.time;
     this.wind.set(1.1 + 0.45 * Math.sin(t * 0.31) + 0.2 * Math.sin(t * 1.7), 0, 0.5 + 0.3 * Math.sin(t * 0.23 + 1.3));
@@ -293,6 +376,7 @@ export class Effects {
     this.glints.update(dt, this.camPos, this.wind);
     for (const w of this.loose) w.update(dt, this);
     this.skids.flush();
+    if (this.warmFrames > 0) { this.warmFrames--; this.forceWarm(); }
   }
 
   clear() {
@@ -300,5 +384,9 @@ export class Effects {
     this.shards.clear(); this.plastic.clear(); this.metal.clear(); this.clods.clear();
     for (const w of this.loose) w.dispose();
     this.loose = [];
+    this.sources.length = 0;
+    this.unforceWarm();
+    this.warmFrames = 3;
+    this.forceWarm();
   }
 }

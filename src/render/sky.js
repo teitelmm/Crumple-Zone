@@ -304,13 +304,24 @@ export function makeSkyMaterial(cloudTex, { env = false, cover = 0.56 } = {}) {
   });
 }
 
+// PMREM cube size per tier. A soft sky, a hazy horizon band and clouds need
+// little resolution; 256 keeps near-mirror glass/clearcoat crisp on 'high'.
+const ENV_SIZE = { low: 64, medium: 128, high: 256 };
+
 // Sky dome: drawn first (renderOrder -20), centred on the camera every frame,
 // projected onto the far plane so the camera far distance never clips it.
+// Only a cap down to ~6 degrees below the horizon: the ground (terrain out to
+// +-1850 m) always covers the rest, so shading it was a full wasted layer of the
+// most expensive shader in the scene; anything uncovered shows the clear colour
+// (HORIZON_COLOR, the same haze).
 export class SkyDome {
   constructor(scene, quality) {
+    this.quality = quality;
+    this.envRT = null;
     this.cloudTex = makeCloudTexture(quality === 'low' ? 128 : 256);
     this.material = makeSkyMaterial(this.cloudTex);
-    this.mesh = new THREE.Mesh(new THREE.SphereGeometry(1000, quality === 'low' ? 32 : 48, quality === 'low' ? 16 : 24), this.material);
+    const geo = new THREE.SphereGeometry(1000, quality === 'low' ? 32 : 48, quality === 'low' ? 9 : 13, 0, Math.PI * 2, 0, Math.PI / 2 + 0.1);
+    this.mesh = new THREE.Mesh(geo, this.material);
     this.mesh.renderOrder = -20;
     this.mesh.frustumCulled = false;
     this.mesh.matrixAutoUpdate = false;
@@ -330,9 +341,16 @@ export class SkyDome {
 
   // Prefiltered environment for PBR materials, rendered from the same sky (with
   // a lit ground, a hazy horizon band and clouds; the sun's specular comes from
-  // the DirectionalLight instead of the disc).
+  // the DirectionalLight instead of the disc). Calling it again (e.g. after a
+  // lost WebGL context, which leaves the old one black) replaces the old one.
   buildEnvironment(renderer) {
     const pm = new THREE.PMREMGenerator(renderer);
+    // r165's fromScene always renders a 256 cube; size it per tier instead
+    const size = ENV_SIZE[this.quality] || 128;
+    if (typeof pm._setSize === 'function') {
+      const setSize = pm._setSize;
+      pm._setSize = function () { setSize.call(this, size); };
+    }
     const envScene = new THREE.Scene();
     const mat = makeSkyMaterial(this.cloudTex, { env: true });
     envScene.add(new THREE.Mesh(new THREE.SphereGeometry(50, 64, 32), mat));
@@ -340,6 +358,8 @@ export class SkyDome {
     pm.dispose();
     mat.dispose();
     envScene.children[0].geometry.dispose();
+    if (this.envRT) this.envRT.dispose();
+    this.envRT = rt;
     return rt.texture;
   }
 }

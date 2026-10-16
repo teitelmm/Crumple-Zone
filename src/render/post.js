@@ -10,8 +10,8 @@
 //   high:   scene (4x MSAA, HDR) -> bloom (half-res chain) -> final (AO + bloom + tone map + grade + vignette + sRGB + dither) -> screen
 //           GTAO runs at half resolution from its own normal/depth pass and is multiplied in by the final pass
 //           (no half-float MSAA on the GPU: plain HDR target and FXAA after the final pass, as on medium)
-//   medium: scene (HDR)          -> bloom (quarter-res)    -> final -> FXAA -> screen
-//   low:    direct render (no composer)
+//   medium: scene (HDR)          -> bloom (quarter-res)    -> final -> 8-bit target -> FXAA -> screen
+//   low:    direct render (no composer; the canvas has MSAA instead, see scene.js)
 import * as THREE from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
@@ -22,6 +22,20 @@ import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 import { FXAAShader } from 'three/addons/shaders/FXAAShader.js';
 
 // AgX (Sobotka; Filament/three.js fit) with a look applied in the AgX log domain.
+//
+// The AgX log encoding is reshaped toward a camera response:
+//   ev = log2(x)
+//   ev += 0.595 * log2(1 + exp2((ev + 0.4) / 0.7))  photographic shoulder: AgX keeps
+//        ~6.5 stops above middle grey, so a sunlit white wall would land at ~85% and
+//        daylight looks flat; above ~0.75 each stop counts ~1.85, so sunlit whites
+//        and clouds reach ~91-95%
+//   ev += 0.10 * log2(1 + exp2(-4 - ev))            slightly softer toe than AgX, so
+//        shade keeps detail without lifting the blacks
+//   n = (ev + 12.47393) / 16.499999                 AgX log range
+// That chain costs 12 log2/exp2 per pixel, and on 'low' it runs in every material
+// (overdraw 2-4), so n is evaluated as a degree-6 polynomial in log2(x), fitted
+// over the whole range (max error 0.18/255 before the look, max dE76 0.43 at the
+// output). Every tier uses this same function, so tiers match exactly.
 export const TONEMAP_GLSL = /* glsl */`
 vec3 czAgxContrast( vec3 x ) {
   vec3 x2 = x * x;
@@ -29,29 +43,21 @@ vec3 czAgxContrast( vec3 x ) {
   return 15.5 * x4 * x2 - 40.14 * x4 * x + 31.96 * x4 - 6.868 * x2 * x + 0.4298 * x2 + 0.1191 * x - 0.00232;
 }
 vec3 czToneMap( vec3 color ) {
-  const mat3 toRec2020 = mat3( vec3( 0.6274, 0.0691, 0.0164 ), vec3( 0.3293, 0.9195, 0.0880 ), vec3( 0.0433, 0.0113, 0.8956 ) );
-  const mat3 fromRec2020 = mat3( vec3( 1.6605, -0.1246, -0.0182 ), vec3( -0.5876, 1.1329, -0.1006 ), vec3( -0.0728, -0.0083, 1.1187 ) );
-  const mat3 inset = mat3(
-    vec3( 0.856627153315983, 0.137318972929847, 0.11189821299995 ),
-    vec3( 0.0951212405381588, 0.761241990602591, 0.0767994186031903 ),
-    vec3( 0.0482516061458583, 0.101439036467562, 0.811302368396859 ) );
+  // AgX inset * (linear sRGB -> Rec.2020), premultiplied
+  const mat3 toAgx = mat3(
+    vec3( 0.5448121, 0.1404193, 0.08881714 ),
+    vec3( 0.3737974, 0.7541078, 0.1788598 ),
+    vec3( 0.08138096, 0.1053967, 0.7323154 ) );
   const mat3 outset = mat3(
     vec3( 1.1271005818144368, -0.1413297634984383, -0.14132976349843826 ),
     vec3( -0.11060664309660323, 1.157823702216272, -0.11060664309660294 ),
     vec3( -0.016493938717834573, -0.016493938717834257, 1.2519364065950405 ) );
-  const float minEv = -12.47393;
-  const float maxEv = 4.026069;
-  color = inset * ( toRec2020 * color );
-  vec3 ev = clamp( log2( max( color, 1e-10 ) ), -14.0, 12.0 );
-  // Photographic shoulder: AgX keeps ~6.5 stops above middle grey, so a sunlit
-  // white wall lands at ~85% and daylight looks flat. Above ~0.75 each stop
-  // counts ~1.85 (soft knee), so sunlit whites and clouds reach ~91-95%.
-  ev += 0.595 * log2( 1.0 + exp2( ( ev + 0.4 ) * 1.4285714 ) );
-  // Softer toe: below ~0.06 each stop counts ~0.82, so shade keeps detail
-  // instead of sinking into navy (AgX's toe is steeper than a camera's).
-  ev += 0.18 * log2( 1.0 + exp2( -4.0 - ev ) );
-  color = clamp( ( ev - minEv ) / ( maxEv - minEv ), 0.0, 1.0 );
-  color = czAgxContrast( color );
+  const mat3 fromRec2020 = mat3( vec3( 1.6605, -0.1246, -0.0182 ), vec3( -0.5876, 1.1329, -0.1006 ), vec3( -0.0728, -0.0083, 1.1187 ) );
+  color = toAgx * color;
+  // log2(x) in [-13.42, 1.95] -> u in [0, 1] -> shaped AgX log value (see above)
+  vec3 u = clamp( log2( max( color, 1e-10 ) ) * 0.06506181 + 0.87312947, 0.0, 1.0 );
+  vec3 n = -0.00852148 + u * ( 1.20771 + u * ( -3.21688 + u * ( 11.5383 + u * ( -19.98 + u * ( 16.5216 + u * -5.06064 ) ) ) ) );
+  color = czAgxContrast( clamp( n, 0.0, 1.0 ) );
   // look: AgX's inset leaves colours muted; restore saturation in the mid-tones,
   // less in deep shadow (skylight already tints them blue) and in highlights
   // (keeps sunlit red paint from clipping).
@@ -59,6 +65,9 @@ vec3 czToneMap( vec3 color ) {
   float sat = mix( 1.12, 1.32, smoothstep( 0.08, 0.3, luma ) ) * ( 1.0 - 0.2 * smoothstep( 0.5, 0.9, luma ) );
   color = luma + sat * ( color - luma );
   color = outset * color;
+  // gentle S-curve in display space: deeper blacks (no hazy, lifted shadows),
+  // middle grey stays put, highlights a touch brighter
+  color += 0.12 * ( color * color * ( 3.0 - 2.0 * color ) - color );
   color = pow( max( color, 0.0 ), vec3( 2.2 ) );
   return clamp( fromRec2020 * color, 0.0, 1.0 );
 }
@@ -82,25 +91,32 @@ export function installToneMapping(renderer, exposure) {
 }
 
 // Soft-knee bright pass (energy above the threshold only), 4 taps so small
-// sun glints don't flicker, clamped against fireflies.
+// sun glints don't flicker. The sun's specular on clearcoat and glass (roughness
+// 0.015-0.03) peaks in the thousands, so each tap is clamped (hue kept) and the
+// taps are averaged with 1/(1 + luma) weights (Karis average): an isolated glint
+// can't flood the blur chain with a white smudge, while bright areas a few pixels
+// across (the sun disc, a wide sheen) still bloom.
 const BRIGHT_FRAG = /* glsl */`
 uniform sampler2D tDiffuse;
 uniform vec2 uTexel;
 uniform float uThreshold;
 varying vec2 vUv;
-vec3 czBright( vec3 c ) {
+vec4 czTap( vec2 o ) {
+  vec3 c = texture2D( tDiffuse, vUv + uTexel * o ).rgb;
   float br = max( c.r, max( c.g, c.b ) );
+  float k = min( 1.0, 24.0 / max( br, 1e-4 ) );
+  c *= k;
+  br *= k;
   float knee = uThreshold * 0.5;
   float soft = clamp( br - uThreshold + knee, 0.0, 2.0 * knee );
   soft = soft * soft / ( 4.0 * knee + 1e-4 );
-  return c * ( max( soft, br - uThreshold ) / max( br, 1e-4 ) );
+  float w = 1.0 / ( 1.0 + dot( c, vec3( 0.2126, 0.7152, 0.0722 ) ) );
+  return vec4( c * ( max( soft, br - uThreshold ) / max( br, 1e-4 ) * w ), w );
 }
 void main() {
-  vec3 c = czBright( texture2D( tDiffuse, vUv + uTexel * vec2( -0.5, -0.5 ) ).rgb )
-         + czBright( texture2D( tDiffuse, vUv + uTexel * vec2( 0.5, -0.5 ) ).rgb )
-         + czBright( texture2D( tDiffuse, vUv + uTexel * vec2( -0.5, 0.5 ) ).rgb )
-         + czBright( texture2D( tDiffuse, vUv + uTexel * vec2( 0.5, 0.5 ) ).rgb );
-  gl_FragColor = vec4( min( c * 0.25, vec3( 150.0 ) ), 1.0 );
+  vec4 s = czTap( vec2( -0.5, -0.5 ) ) + czTap( vec2( 0.5, -0.5 ) )
+         + czTap( vec2( -0.5, 0.5 ) ) + czTap( vec2( 0.5, 0.5 ) );
+  gl_FragColor = vec4( min( s.rgb / s.a, vec3( 16.0 ) ), 1.0 );
 }`;
 
 const QUAD_VERT = /* glsl */`
@@ -211,9 +227,16 @@ void main() {
   gl_FragColor = vec4( c, 1.0 );
 }`;
 
+// The composer never swaps buffers: the scene stays in its one HDR target, and
+// the final pass writes to the screen or, when FXAA follows, to an 8-bit target
+// (`output`). Swapping would alternate the scene between two HDR targets (on
+// 'high' a second 4x MSAA half-float target, tens of MB) and keep the
+// FXAA input in half-float for no gain.
 class FinalPass extends Pass {
   constructor(bloom, exposure) {
     super();
+    this.needsSwap = false;
+    this.output = null;
     this.bloom = bloom;
     this.ao = null;
     this.aoStrength = 0.9;
@@ -237,7 +260,10 @@ class FinalPass extends Pass {
     this.fsQuad = new FullScreenQuad(this.material);
   }
 
-  setSize(w, h) { this.material.uniforms.uAspect.value = w / Math.max(1, h); }
+  setSize(w, h) {
+    this.material.uniforms.uAspect.value = w / Math.max(1, h);
+    if (this.output) this.output.setSize(w, h);
+  }
 
   render(renderer, writeBuffer, readBuffer) {
     const u = this.material.uniforms;
@@ -248,11 +274,24 @@ class FinalPass extends Pass {
     u.tAO.value = this.ao ? this.ao.gtaoMap : null;
     u.tAODepth.value = this.ao ? this.ao.depthTexture : null;
     if (this.ao) u.uNearFar.value.set(this.ao.camera.near, this.ao.camera.far);
-    renderer.setRenderTarget(this.renderToScreen ? null : writeBuffer);
+    // (only a pass that writes the composer's writeBuffer may swap)
+    this.needsSwap = !this.renderToScreen && !this.output;
+    renderer.setRenderTarget(this.renderToScreen ? null : (this.output || writeBuffer));
     this.fsQuad.render(renderer);
   }
 
-  dispose() { this.material.dispose(); this.fsQuad.dispose(); }
+  dispose() { this.material.dispose(); this.fsQuad.dispose(); if (this.output) this.output.dispose(); }
+}
+
+// FXAA from the final pass's 8-bit output straight to the screen.
+class FXAAPass extends ShaderPass {
+  constructor(input) {
+    super(FXAAShader);
+    this.input = input;
+    this.needsSwap = false;
+  }
+
+  render(renderer, writeBuffer) { super.render(renderer, writeBuffer, this.input); }
 }
 
 // GTAO whose normal/depth pre-pass skips things that don't belong in the depth
@@ -280,9 +319,10 @@ class ContactAOPass extends GTAOPass {
 
 const AO_FAR = 150;
 
+// radius < 0.5 favours the tight mips, so what still blooms stays close to the highlight
 const BLOOM = {
-  high: { strength: 0.32, radius: 0.55, threshold: 3.2, downscale: 1 },
-  medium: { strength: 0.28, radius: 0.5, threshold: 3.2, downscale: 2 },
+  high: { strength: 0.32, radius: 0.4, threshold: 3.2, downscale: 1 },
+  medium: { strength: 0.28, radius: 0.35, threshold: 3.2, downscale: 2 },
 };
 
 export class PostFX {
@@ -312,7 +352,11 @@ export class PostFX {
     this.composer.addPass(this.bloom);
     this.composer.addPass(this.final);
     if (!this.msaa) {
-      this.fxaa = new ShaderPass(FXAAShader);
+      // tone-mapped, dithered sRGB: 8 bits is all FXAA needs
+      const ldr = new THREE.WebGLRenderTarget(Math.max(1, size.x), Math.max(1, size.y), { depthBuffer: false, stencilBuffer: false });
+      ldr.texture.name = 'PostFX.ldr';
+      this.final.output = ldr;
+      this.fxaa = new FXAAPass(ldr);
       this.composer.addPass(this.fxaa);
     }
     this.setSize(size.x, size.y);
@@ -391,6 +435,7 @@ export class PostFX {
     this.composer.renderTarget2.dispose();
     this.bloom.dispose();
     this.final.dispose();
+    if (this.fxaa) this.fxaa.dispose();
     if (this.ao) this.ao.dispose();
   }
 }
@@ -404,6 +449,22 @@ function maxHalfFloatSamples(renderer) {
     return s && s.length ? Math.max(...s) : 0;
   } catch (err) {
     return 0;
+  }
+}
+
+// Whether this device can run the composer (renders to half-float targets).
+// Asked before the renderer exists, on a throwaway context, so the canvas can be
+// created with MSAA when there will be no composer to antialias.
+export function probePostSupport() {
+  try {
+    const gl = document.createElement('canvas').getContext('webgl2');
+    if (!gl) return false;
+    const ok = !!(gl.getExtension('EXT_color_buffer_float') || gl.getExtension('EXT_color_buffer_half_float'));
+    const lose = gl.getExtension('WEBGL_lose_context');
+    if (lose) lose.loseContext();
+    return ok;
+  } catch (err) {
+    return false;
   }
 }
 

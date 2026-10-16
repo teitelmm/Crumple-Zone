@@ -5,7 +5,7 @@
 //   macro   brightness variation at two large world scales (hides tiling)
 //   tint    colour drift between two tints over the world (dry / lush grass ...)
 //   detail  second, rotated sample of the albedo at another scale (anti-tiling)
-//   patches sharp-edged blotches: asphalt repairs, oil stains
+//   patches soft-edged blotches: asphalt repairs, oil stains
 //   cracks  thin meandering cracks from noise isolines
 //   roughA  roughness read from the normal map's alpha channel
 //   grass   verge mask / mowing stripes / tree shade from a world map texture
@@ -96,7 +96,8 @@ float envPaint = 0.0;
   #ifdef ENV_PATCH
   {
     float pn = texture2D( uEnvNoise, envP * uPatch.x + vec2( 0.2, 0.7 ) ).b;
-    float pw = fwidth( pn );
+    // soft edge: a hard one reads as a cast shadow with nothing to cast it
+    float pw = fwidth( pn ) * 4.0 + 0.012;
     float pm = smoothstep( uPatch.y - pw, uPatch.y + pw, pn );
     diffuseColor.rgb *= 1.0 - pm * uPatch.z;
     envRough *= mix( 1.0, uPatch.w, pm );
@@ -212,10 +213,28 @@ const FRAG_FOG = /* glsl */`
 
 const FEATURES = ['macro', 'tint', 'detail', 'patches', 'cracks', 'roughA', 'grass', 'track', 'canopy', 'haze'];
 
-// Build a patched MeshStandardMaterial. `params` are normal material params,
-// `o` selects features (see top of file) and their settings.
+// Low tier: matte world surfaces are shaded with Lambert instead of PBR + IBL
+// (about a quarter less GPU work on phones, where the ground fills most of the
+// frame). Set once by the Environment before it builds materials; o.lambert
+// overrides it per material. Lambert takes its ambient from the hemisphere
+// light, which lighting.js tunes to match the PBR ambient.
+let LAMBERT = false;
+export function setLambertDefault(on) { LAMBERT = !!on; }
+
+const PBR_ONLY = ['roughness', 'metalness', 'roughnessMap', 'metalnessMap', 'envMapIntensity'];
+// a MeshStandardMaterial, or (lambert) a MeshLambertMaterial from the same params
+export function litMaterial(params, lambert = LAMBERT) {
+  if (!lambert) return new THREE.MeshStandardMaterial(params);
+  const p = { ...params };
+  for (const k of PBR_ONLY) delete p[k];
+  return new THREE.MeshLambertMaterial(p);
+}
+
+// Build a patched MeshStandardMaterial (MeshLambertMaterial on the low tier, see
+// above). `params` are normal material params, `o` selects features (see top
+// of file) and their settings.
 export function envMaterial(params, o = {}) {
-  const m = new THREE.MeshStandardMaterial(params);
+  const m = litMaterial(params, o.lambert ?? LAMBERT);
   return patchMaterial(m, o);
 }
 

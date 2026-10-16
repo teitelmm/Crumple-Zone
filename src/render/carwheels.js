@@ -1,12 +1,14 @@
 // Wheels: lathe-profiled tyre (rounded shoulders, sidewall bulge, tread grooves and a
-// tread normal map), per-car extruded rim (spoke windows, dished face, lip, barrel,
-// centre cap and lug nuts) drawn as one mesh with its finish and cavity shading baked
-// into vertex colours, brake disc and caliper. Draws per wheel: tyre + rim (+ brake on
-// high/medium).
+// tread normal map) and per-car extruded rim (spoke windows, dished face, lip, barrel,
+// centre cap and lug nuts) merged into one mesh: colour, roughness and metalness are
+// per vertex (rubber, face and pocket finishes, polished lip, cavity shading), so a wheel
+// is one draw, plus a brake disc and caliper on high. Medium and low use the coarse
+// wheel (24 segments, no brake); medium keeps the tread normal map.
 // Local frame: Z = axle, outer face +Z; left wheels are mirrored with scale.z = -1 by the
 // caller. The `spin` child rotates about Z; brakes stay put.
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { vertexRM } from './carmaterials.js';
 
 const geoCache = new Map();
 const matCache = new Map();
@@ -177,29 +179,58 @@ function rimGeometry(spec, hi) {
   const F = FINISH[wv.face], Wc = FINISH[wv.walls];
   const cFace = new THREE.Color(F.color), cWall = new THREE.Color(Wc.color);
   const cDeep = cWall.clone().multiplyScalar(0.22);
-  const tint = (g, fn) => {
-    const n2 = clean(g), p = n2.attributes.position, col = new Float32Array(p.count * 3), c = new THREE.Color();
-    for (let i = 0; i < p.count; i++) { fn(p.getX(i), p.getY(i), p.getZ(i), c); col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b; }
-    n2.setAttribute('color', new THREE.BufferAttribute(col, 3));
-    return n2;
-  };
-  const faceT = tint(faceG, (x, y, z, c) => c.copy(cFace));
+  const RM_F = [F.roughness, F.metalness], RM_W = [Wc.roughness, Wc.metalness];
+  // the thin, tightly curved lip catches the sun in single pixels: keep it satin
+  const RM_LIP = [0.5, F.metalness], RM_NUT = [0.42, 0.9];
+  const faceT = tint(faceG, (x, y, z, c) => (c.copy(cFace), RM_F));
   // spoke side walls: the finish of the pockets, darker toward the back edge
-  const wallT = tint(wallG, (x, y, z, c) => c.copy(cWall).lerp(cDeep, 0.25 + 0.5 * clamp01((zFace - z) / 0.04)));
+  const wallT = tint(wallG, (x, y, z, c) => (c.copy(cWall).lerp(cDeep, 0.25 + 0.5 * clamp01((zFace - z) / 0.04)), RM_W));
   const barrelT = tint(barrel, (x, y, z, c) => {
     const r = Math.hypot(x, y);
-    if (r >= rimR - 0.001) return c.copy(cFace); // polished lip
+    if (r >= rimR - 0.001) return (c.copy(cFace), RM_LIP); // polished lip
     c.copy(cDeep).lerp(cWall, 0.55 * clamp01((z - (zFace - 0.07)) / 0.065));
+    return RM_W;
   });
-  const hubT = tint(hubG, (x, y, z, c) => c.copy(cWall).multiplyScalar(0.55));
-  const capT = tint(cap, (x, y, z, c) => c.copy(cFace).multiplyScalar(0.8));
-  const nutsT = parts.slice(2).map(g => tint(g, (x, y, z, c) => c.set('#c6c9cd')));
-  return mergeGeometries([faceT, wallT, barrelT, hubT, capT, ...nutsT]);
+  const hubT = tint(hubG, (x, y, z, c) => (c.copy(cWall).multiplyScalar(0.55), RM_W));
+  const capT = tint(cap, (x, y, z, c) => (c.copy(cFace).multiplyScalar(0.8), RM_F));
+  const nutsT = parts.slice(2).map(g => tint(g, (x, y, z, c) => (c.set('#c6c9cd'), RM_NUT)));
+  // the barrel and hub are seen from both sides (inside through the spoke windows), so
+  // they get a reversed copy and the wheel can be drawn single-sided: a double-sided
+  // tyre speckles where its inner faces z-fight the outer ones along the silhouette
+  return mergeGeometries([faceT, wallT, barrelT, flipped(barrelT), hubT, flipped(hubT), capT, ...nutsT]);
+}
+// reversed-winding copy with inverted normals (the other side of a thin surface)
+function flipped(src) {
+  const g = src.clone();
+  for (const name of Object.keys(g.attributes)) {
+    const a = g.attributes[name], n = a.itemSize, arr = a.array;
+    for (let t = 0; t + 2 < a.count; t += 3) {
+      for (let k = 0; k < n; k++) { const i = (t + 1) * n + k, j = (t + 2) * n + k, tmp = arr[i]; arr[i] = arr[j]; arr[j] = tmp; }
+    }
+    if (name === 'normal') for (let i = 0; i < arr.length; i++) arr[i] = -arr[i];
+  }
+  return g;
+}
+// non-indexed copy with vertex colour + czRM from fn(x, y, z, colour) -> [rough, metal];
+// texture coordinates point at a flat corner of the tread normal map
+function tint(g, fn, keepUv = false) {
+  const n2 = clean(g), p = n2.attributes.position;
+  const col = new Float32Array(p.count * 3), rm = new Float32Array(p.count * 2), c = new THREE.Color();
+  for (let i = 0; i < p.count; i++) {
+    const r = fn(p.getX(i), p.getY(i), p.getZ(i), c);
+    col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b;
+    rm[i * 2] = r[0]; rm[i * 2 + 1] = r[1];
+  }
+  n2.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  n2.setAttribute('czRM', new THREE.BufferAttribute(rm, 2));
+  if (!keepUv) { const uv = n2.attributes.uv; for (let i = 0; i < uv.count; i++) uv.setXY(i, 0, 0.05); }
+  return n2;
 }
 const clamp01 = v => (v < 0 ? 0 : v > 1 ? 1 : v);
 function clean(g) {
   const n2 = g.index ? g.toNonIndexed() : g;
   for (const k of Object.keys(n2.attributes)) if (!['position', 'normal', 'uv'].includes(k)) n2.deleteAttribute(k);
+  n2.clearGroups();
   return n2;
 }
 
@@ -228,45 +259,69 @@ function geometries(spec, hi) {
   const key = spec.id + (hi ? ':hi' : ':lo');
   if (geoCache.has(key)) return geoCache.get(key);
   const d = spec.dims, rimR = spec.visual.wheel.rim * 0.0254 / 2;
-  const rim = rimGeometry(spec, hi);
+  const tyre = tint(tyreGeometry(d.wheelRadius, d.tireWidth, rimR, hi), (x, y, z, c) => (c.copy(TYRE), RM_TYRE), true);
   const g = {
-    tyre: tyreGeometry(d.wheelRadius, d.tireWidth, rimR, hi),
-    rim,
+    wheel: mergeGeometries([tyre, rimGeometry(spec, hi)]),
     brake: hi ? brakeGeometry(spec, rimR) : null,
   };
   geoCache.set(key, g);
   return g;
 }
 
+const TYRE = new THREE.Color('#1c1c1d'), RM_TYRE = [0.88, 0];
 const FINISH = {
-  silver: { color: '#b4b8bd', metalness: 0.78, roughness: 0.36 },
-  gunmetal: { color: '#62666c', metalness: 0.85, roughness: 0.34 },
-  machined: { color: '#c9ccd0', metalness: 0.9, roughness: 0.24 },
-  dark: { color: '#1b1d20', metalness: 0.7, roughness: 0.38 },
+  silver: { color: '#b4b8bd', metalness: 0.78, roughness: 0.42 },
+  gunmetal: { color: '#62666c', metalness: 0.85, roughness: 0.42 },
+  machined: { color: '#c9ccd0', metalness: 0.9, roughness: 0.38 },
+  dark: { color: '#1b1d20', metalness: 0.7, roughness: 0.42 },
 };
-function materials(spec, hi) {
-  const key = spec.id + (hi ? ':hi' : ':lo');
+function materials(tread) {
+  const key = tread ? 'tread' : 'plain';
   if (matCache.has(key)) return matCache.get(key);
-  const wv = spec.visual.wheel;
-  const tyre = new THREE.MeshStandardMaterial({ color: '#1c1c1d', roughness: 0.88, metalness: 0 });
-  if (hi) { tyre.normalMap = treadNormalMap(); tyre.normalMap.repeat.set(60, 1); tyre.normalScale.set(0.9, 0.9); }
-  const F = FINISH[wv.face], Wf = FINISH[wv.walls];
-  const rim = new THREE.MeshStandardMaterial({ vertexColors: true, metalness: (F.metalness + Wf.metalness) / 2, roughness: (F.roughness + Wf.roughness) / 2, side: THREE.DoubleSide });
+  const wheel = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, metalness: 0 });
+  wheel.onBeforeCompile = vertexRM;
+  if (tread) { wheel.normalMap = treadNormalMap(); wheel.normalMap.repeat.set(60, 1); wheel.normalScale.set(0.9, 0.9); }
   const brake = new THREE.MeshStandardMaterial({ vertexColors: true, metalness: 0.55, roughness: 0.45 });
-  const m = { tyre, rim, brake };
+  const m = { wheel, brake };
   matCache.set(key, m);
   return m;
 }
 
+// Geometry + materials of a wheel for instanced drawing (carview.js draws every wheel of
+// one model and side in a single InstancedMesh). Left wheels get a mirrored copy with
+// the winding reversed: three only flips the front face for a mirroring object matrix,
+// not for mirroring instance matrices.
+const mirCache = new Map();
+export function wheelParts(spec, quality, left = false) {
+  const hi = quality === 'high', g = geometries(spec, hi), m = materials(quality !== 'low');
+  let wheel = g.wheel;
+  if (left) {
+    const key = spec.id + (hi ? ':hi' : ':lo');
+    if (!mirCache.has(key)) mirCache.set(key, mirrorGeometry(g.wheel));
+    wheel = mirCache.get(key);
+  }
+  return { wheel, material: m.wheel, castShadow: hi, brake: g.brake, brakeMaterial: m.brake };
+}
+function mirrorGeometry(src) {
+  const g = src.clone();
+  for (const name of Object.keys(g.attributes)) {
+    const a = g.attributes[name], n = a.itemSize, arr = a.array;
+    for (let t = 0; t + 2 < a.count; t += 3) {
+      for (let k = 0; k < n; k++) { const i = (t + 1) * n + k, j = (t + 2) * n + k, tmp = arr[i]; arr[i] = arr[j]; arr[j] = tmp; }
+    }
+    if (name === 'position' || name === 'normal') for (let i = 2; i < arr.length; i += 3) arr[i] = -arr[i];
+  }
+  return g;
+}
+
 export function makeWheelMesh(spec, quality = 'high') {
-  const hi = quality !== 'low';
-  const g = geometries(spec, hi), m = materials(spec, hi);
+  const g = geometries(spec, quality === 'high'), m = materials(quality !== 'low');
   const grp = new THREE.Group();
   const spin = new THREE.Group();
-  const tyre = new THREE.Mesh(g.tyre, m.tyre);
-  tyre.castShadow = true;
-  spin.add(tyre);
-  spin.add(new THREE.Mesh(g.rim, m.rim));
+  const wheel = new THREE.Mesh(g.wheel, m.wheel);
+  // the body's shadow covers the wheels; only the high tier adds their own
+  wheel.castShadow = quality === 'high';
+  spin.add(wheel);
   grp.add(spin);
   if (g.brake) grp.add(new THREE.Mesh(g.brake, m.brake));
   grp.userData.spin = spin;

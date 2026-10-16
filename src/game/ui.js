@@ -19,6 +19,8 @@ export class UI {
     this.toastTimer = 0;
     this.bannerTimer = 0;
     this.hudTick = 0;
+    this.tachCar = null; this.tachRpm = 0;
+    document.fonts?.ready?.then(() => { this.tachCar = null; }); // redraw the tach numerals in the web font
     this.buildMenu();
     this.bindButtons();
     this.applySettings();
@@ -196,7 +198,7 @@ export class UI {
     if (this.toastTimer > 0) { this.toastTimer -= dt; if (this.toastTimer <= 0) $('#toast').classList.remove('show'); }
     if (!car) return;
     this.hudTick -= dt;
-    this.drawTach(car);
+    if (!this.game.isTouch) this.drawTach(car); // the touch HUD hides the tach
     if (this.hudTick > 0) return;
     this.hudTick = 0.1;
     const mph = this.settings.units === 'mph';
@@ -223,12 +225,16 @@ export class UI {
   }
 
   drawTach(car) {
-    const cv = $('#tach');
-    const ctx = cv.getContext('2d');
-    const W = cv.width, H = cv.height, cx = W / 2, cy = H / 2, R = W * 0.44;
-    ctx.clearRect(0, 0, W, H);
     const e = car.spec.engine;
     const maxR = Math.ceil((e.limiter + 300) / 1000) * 1000;
+    // redraw only when the needle has moved about a pixel (or the car changed)
+    const rpm = car.rpmShown;
+    if (car === this.tachCar && Math.abs(rpm - this.tachRpm) < maxR * 0.002) return;
+    this.tachCar = car; this.tachRpm = rpm;
+    const cv = this.tachCv || (this.tachCv = $('#tach'));
+    const ctx = this.tachCtx || (this.tachCtx = cv.getContext('2d'));
+    const W = cv.width, H = cv.height, cx = W / 2, cy = H / 2, R = W * 0.44;
+    ctx.clearRect(0, 0, W, H);
     const a0 = Math.PI * 0.75, a1 = Math.PI * 2.25;
     const ang = r => a0 + (a1 - a0) * Math.min(1, r / maxR);
     ctx.lineCap = 'butt';
@@ -237,15 +243,18 @@ export class UI {
     ctx.beginPath(); ctx.arc(cx, cy, R, a0, a1); ctx.stroke();
     ctx.strokeStyle = '#d23a2a';
     ctx.beginPath(); ctx.arc(cx, cy, R, ang(e.redline), a1); ctx.stroke();
-    const rpm = car.rpmShown;
     ctx.strokeStyle = rpm > e.redline ? '#ff5a3c' : '#f2b705';
     ctx.beginPath(); ctx.arc(cx, cy, R, a0, ang(rpm)); ctx.stroke();
-    ctx.fillStyle = 'rgba(255,255,255,0.55)';
+    ctx.fillStyle = 'rgba(255,255,255,0.82)';
+    ctx.strokeStyle = 'rgba(0,0,0,0.75)';
+    ctx.lineWidth = 4; // half the stroke shows outside the glyph: ~1 CSS px on this 2x canvas
+    ctx.lineJoin = 'round';
     ctx.font = `600 ${Math.round(W * 0.06)}px "Barlow Condensed", sans-serif`;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     for (let r = 0; r <= maxR; r += 1000) {
-      const a = ang(r);
-      ctx.fillText(String(r / 1000), cx + Math.cos(a) * R * 0.78, cy + Math.sin(a) * R * 0.78);
+      const a = ang(r), tx = cx + Math.cos(a) * R * 0.78, ty = cy + Math.sin(a) * R * 0.78;
+      ctx.strokeText(String(r / 1000), tx, ty);
+      ctx.fillText(String(r / 1000), tx, ty);
     }
   }
 

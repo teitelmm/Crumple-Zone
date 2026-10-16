@@ -234,10 +234,45 @@ export class ColliderViews {
         ? [0, 0, sl, 0.25, sl, 0, 0, 0, 0, 0.25, sl, 0.25]
         : [0, z0 / 4, sl / 4, z1 / 4, sl / 4, z0 / 4, 0, z0 / 4, 0, z1 / 4, sl / 4, z1 / 4]), M);
     deck(-W, -W + e, 'hazard');
-    deck(-W + e, W - e, 'deck');
+    // concrete deck, uvs in metres over the concrete tile
+    const ct = this.env.T.tile.concrete;
+    addPart(c.id, 'deck', tri(
+      [0, 0, -W + e, L, Hh, W - e, L, Hh, -W + e, 0, 0, -W + e, 0, 0, W - e, L, Hh, W - e],
+      [0, (-W + e) / ct, sl / ct, (W - e) / ct, sl / ct, (-W + e) / ct, 0, (-W + e) / ct, 0, (W - e) / ct, sl / ct, (W - e) / ct]), M);
     deck(W - e, W, 'hazard');
-    // side plates
-    addPart(c.id, 'paint', tri([0, 0, -W, L, Hh, -W, L, 0, -W, 0, 0, W, L, 0, W, L, Hh, W], [0, 0, 1, 1, 1, 0, 0, 0, 1, 0, 1, 1]), M, [0.85, 0.62, 0.05]);
+    // painted marks on the deck (a few mm above it): up-ramp chevrons every
+    // 1.5 m and a white line along the lip, so the slope reads from the chase cam
+    const ux = L / sl, uy = Hh / sl, nx = -uy, ny = ux; // along the slope / deck normal
+    const at = (s, z, h) => [ux * s + nx * h, uy * s + ny * h, z];
+    const flat = (pts) => { // [[s, z] x 4] quad on the deck, facing up
+      const P = pts.map(([s, z]) => at(s, z, 0.006));
+      const g = tri([...P[0], ...P[2], ...P[1], ...P[0], ...P[3], ...P[2]], [0, 0, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1]);
+      if (g.attributes.normal.getY(0) < 0) { // wrong winding: flip
+        const n = g.attributes.normal;
+        const p = g.attributes.position;
+        for (let i = 0; i < p.count; i += 3) for (let k = 0; k < 3; k++) {
+          const t = p.getComponent(i + 1, k); p.setComponent(i + 1, k, p.getComponent(i + 2, k)); p.setComponent(i + 2, k, t);
+        }
+        for (let i = 0; i < n.count; i++) n.setXYZ(i, -n.getX(i), -n.getY(i), -n.getZ(i));
+      }
+      addPart(c.id, 'paint', g, M, [0.86, 0.86, 0.83]);
+    };
+    const arm = Math.min(1.1, (W - e) * 0.55), tip = 0.6, th = 0.2;
+    for (let s0 = 1.0; s0 + tip + th < sl - 0.6; s0 += 1.5) for (const side of [-1, 1]) {
+      flat([[s0, side * arm], [s0 + th, side * arm], [s0 + tip + th, 0], [s0 + tip, 0]]);
+    }
+    flat([[sl - 0.28, -W + e], [sl - 0.1, -W + e], [sl - 0.1, W - e], [sl - 0.28, W - e]]);
+    // raised steel side kerbs (dark paint) along both edges (the silhouette reads from behind)
+    const ang = Math.atan2(Hh, L);
+    for (const side of [-1, 1]) {
+      const kerb = new THREE.BoxGeometry(sl, 0.12, 0.12).translate(sl / 2, 0.06, side * (W - 0.06)).rotateZ(ang);
+      addPart(c.id, 'paint', kerb, M, [0.3, 0.31, 0.32]); // painted steel angle (bare steel glared)
+    }
+    // side plates: weathered yellow on the concrete wall texture (u along, v up,
+    // which brings its ground grime and rain streaks)
+    const wt = 4;
+    addPart(c.id, 'wall', tri([0, 0, -W, L, Hh, -W, L, 0, -W, 0, 0, W, L, 0, W, L, Hh, W],
+      [0, 0, L / wt, Hh / wt, L / wt, 0, 0, 0, L / wt, 0, L / wt, Hh / wt]), M, [0.82, 0.52, 0.07]);
     // back face at the lip
     addPart(c.id, 'paint', tri([L, 0, -W, L, Hh, -W, L, Hh, W, L, 0, -W, L, Hh, W, L, 0, W], [0, 0, 0, 1, 1, 1, 0, 0, 1, 1, 1, 0]), M, [0.3, 0.31, 0.32]);
     // steel lip
@@ -255,7 +290,8 @@ export class ColliderViews {
       const uv = g.attributes.uv;
       for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * 2, uv.getY(i) * c.y1 * 1.5);
       addPart(c.id, 'hazard', g, base);
-      addPart(c.id, 'steel', new THREE.BoxGeometry(1.2, 0.08, 1.2).translate(0, 0.04, 0), base);
+      // flush base plate (1 cm): anything taller would stick out past the collider
+      addPart(c.id, 'steel', new THREE.BoxGeometry(1.2, 0.01, 1.2).translate(0, 0.005, 0), base);
       return;
     }
     // street lamp: tapered shaft, footing, bracket arm and LED head

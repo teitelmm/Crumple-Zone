@@ -8,7 +8,7 @@
 // envterrain.js (terrain, mountains, trees, grass).
 import * as THREE from 'three';
 import { makeTextures, DECALS } from './textures.js';
-import { envMaterial, groundMaterial, patchMaterial } from './envshader.js';
+import { envMaterial, groundMaterial, patchMaterial, litMaterial, setLambertDefault } from './envshader.js';
 import { Batch, boxUV, chunkedInstances, rng, trs } from './envgeom.js';
 import { analyseTrack, buildTrack, buildTrackside } from './envtrack.js';
 import { ColliderViews } from './envcolliders.js';
@@ -25,6 +25,8 @@ export class Environment {
     this.world = view.world;
     this.quality = this.q = view.quality;
     const first = this.scene.children.length;
+    // low tier: matte ground and props shade with Lambert (envshader.js)
+    setLambertDefault(this.q === 'low');
     this.T = makeTextures(view.renderer, this.q);
     this.worldMap = makeWorldMap();
     this.blockGrid = new Uint8Array(BLOCK_N * BLOCK_N);
@@ -74,32 +76,40 @@ export class Environment {
   buildMaterials() {
     const T = this.T, hi = this.q !== 'low';
     const std = (o) => new THREE.MeshStandardMaterial(o);
+    // matte surfaces: Lambert on the low tier (metals and glass keep PBR)
+    const matte = (o) => litMaterial(o, !hi);
     const M = this.M = {};
-    M.paintVC = std({ vertexColors: true, roughness: 0.6, metalness: 0.05 });
+    M.paintVC = matte({ vertexColors: true, roughness: 0.6, metalness: 0.05 });
     M.steelVC = std({ vertexColors: true, roughness: 0.4, metalness: 0.7, side: THREE.DoubleSide });
     M.steel = std({ color: '#aeb4b8', roughness: 0.38, metalness: 0.75 });
     M.wall = envMaterial({ map: T.wall, normalMap: hi ? T.wallN : null, vertexColors: true, roughness: hi ? 1 : 0.85 },
       { noise: T.noise, macro: { amp: 0.08, s1: 11, s2: 53 }, roughA: hi });
     M.belt = envMaterial({ map: T.belt, normalMap: hi ? T.beltN : null, roughness: hi ? 1 : 0.7 },
       { noise: T.noise, macro: { amp: 0.08, s1: 17, s2: 71 }, roughA: hi });
-    M.rubber = std({ color: '#151617', roughness: 0.86 });
-    M.hazard = std({ map: T.hazard, roughness: 0.55 });
-    M.lamp = std({ color: '#f4f1e4', emissive: '#fff3d6', emissiveIntensity: 0.6, roughness: 0.3 });
+    M.rubber = matte({ color: '#151617', roughness: 0.86 });
+    M.hazard = matte({ map: T.hazard, roughness: 0.55 });
+    // floodlight lenses: unlit in daylight, glass over polished reflectors
+    M.lamp = std({ color: '#8f979e', roughness: 0.12, metalness: 0.6 });
     M.redLamp = std({ color: '#2a0303', emissive: '#ff2a12', emissiveIntensity: 0.35, roughness: 0.2 });
     M.honeycomb = std({ map: T.honeycomb, roughness: 0.35, metalness: 0.65 });
-    M.deck = envMaterial({ map: T.asphalt, normalMap: hi ? T.asphaltN : null, roughness: hi ? 1 : 0.85, color: '#e4e4e4' },
-      { noise: T.noise, roughA: hi });
+    // ramp decks: light broom-finished concrete (painted chevrons on top, envcolliders.js)
+    M.deck = envMaterial({ map: T.concrete, normalMap: hi ? T.concreteN : null, roughness: hi ? 1 : 0.85, color: '#f2f0ea' },
+      { noise: T.noise, macro: { amp: 0.06, s1: 13, s2: 47 }, roughA: hi });
     M.glass = std({ map: T.glass, roughness: 0.06, metalness: 0.1, envMapIntensity: 1.4 });
-    M.door = std({ map: T.door, roughness: 0.45, metalness: 0.5 });
-    M.cladding = std({ map: T.cladding, vertexColors: true, roughness: 0.5, metalness: 0.35 });
-    M.ads = std({ map: T.ads, roughness: 0.5 });
-    M.crowd = std({ map: T.crowd, vertexColors: true, roughness: 0.9 });
-    M.people = std({ vertexColors: true, roughness: 0.85 });
-    M.skin = std({ color: '#c8956e', roughness: 0.8 });
-    M.target = std({ map: T.target, roughness: 0.6, side: THREE.DoubleSide });
+    M.door = matte({ map: T.door, roughness: 0.45, metalness: 0.5 });
+    M.cladding = matte({ map: T.cladding, vertexColors: true, roughness: 0.5, metalness: 0.35 });
+    M.ads = matte({ map: T.ads, roughness: 0.5 });
+    // same material under another kit key: the gantry banner casts a shadow on
+    // the track, flush boards elsewhere don't need to (envprops.js NO_CAST)
+    M.adsBanner = M.ads;
+    M.crowd = matte({ map: T.crowd, vertexColors: true, roughness: 0.9 });
+    M.people = matte({ vertexColors: true, roughness: 0.85 });
+    M.skin = matte({ color: '#c8956e', roughness: 0.8 });
+    M.target = matte({ map: T.target, roughness: 0.6, side: THREE.DoubleSide });
     if (hi) {
       // leaf cards: alpha tested, two-sided, and keeping the crown normals on back faces
-      M.foliage = std({ map: T.leaves, vertexColors: true, roughness: 0.85, alphaTest: 0.42, side: THREE.DoubleSide, alphaToCoverage: this.q === 'high' });
+      // (rough, and less sky reflection, so crown tops don't turn pale grey)
+      M.foliage = std({ map: T.leaves, vertexColors: true, roughness: 1, envMapIntensity: 0.6, alphaTest: 0.42, side: THREE.DoubleSide, alphaToCoverage: this.q === 'high' });
       // two-sided cards and blades keep their (outward / upward) normals on back
       // faces, otherwise half of them would be lit from below and turn black
       const keepNormals = (m) => {
@@ -118,19 +128,19 @@ export class Environment {
       M.foliageFar = patchMaterial(new THREE.MeshLambertMaterial({ vertexColors: true }), { haze: HAZE });
       M.tuft = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
     }
-    M.paint = new THREE.MeshStandardMaterial({ map: T.paint, vertexColors: true, transparent: true, depthWrite: false, roughness: 0.55 });
-    M.decal = new THREE.MeshStandardMaterial({ map: T.decals, vertexColors: true, transparent: true, depthWrite: false, roughness: 0.6 });
-    M.marks = new THREE.MeshStandardMaterial({ color: '#000000', map: T.paint, transparent: true, opacity: 0.3, depthWrite: false, roughness: 0.75 });
-    M.fence = new THREE.MeshStandardMaterial({ map: T.fence, transparent: true, depthWrite: false, side: THREE.DoubleSide, roughness: 0.5, metalness: 0.5 });
+    M.paint = matte({ map: T.paint, vertexColors: true, transparent: true, depthWrite: false, roughness: 0.55 });
+    M.decal = matte({ map: T.decals, vertexColors: true, transparent: true, depthWrite: false, roughness: 0.6 });
+    M.marks = matte({ color: '#000000', map: T.paint, transparent: true, opacity: 0.3, depthWrite: false, roughness: 0.75 });
+    M.fence = fenceMaterial(T.fence, this.q);
 
     // ground layers
     const noise = T.noise;
     this.padMat = groundMaterial({ map: T.asphalt, normalMap: hi ? T.asphaltN : null, normalScale: new THREE.Vector2(0.8, 0.8), roughness: hi ? 1 : 0.86 }, {
       noise, macro: { amp: 0.13, s1: 41, s2: 173 }, detail: this.q === 'high' ? { scale: 0.29, mix: 0.5 } : null,
-      patches: { scale: 34, thresh: 0.745, dark: 0.16, rough: 1.06 }, cracks: hi ? { scale: 11, width: 0.0016, dark: 0.3, mask: 0.62 } : null, roughA: hi,
+      patches: { scale: 34, thresh: 0.745, dark: 0.07, rough: 1.06 }, cracks: hi ? { scale: 11, width: 0.0016, dark: 0.3, mask: 0.62 } : null, roughA: hi,
     }, 1);
     this.labMat = groundMaterial({ map: T.concrete, normalMap: hi ? T.concreteN : null, roughness: hi ? 1 : 0.82 }, {
-      noise, macro: { amp: 0.1, s1: 29, s2: 151 }, patches: { scale: 26, thresh: 0.74, dark: 0.22, rough: 0.75 }, roughA: hi,
+      noise, macro: { amp: 0.1, s1: 29, s2: 151 }, patches: { scale: 26, thresh: 0.74, dark: 0.1, rough: 0.75 }, roughA: hi,
     }, 1);
   }
 
@@ -280,7 +290,8 @@ export class Environment {
   }
 
   paintArc(cx, cz, r, w, a0, a1, color, batch = this.paintBatch, wobble = null) {
-    const n = Math.max(8, Math.ceil(Math.abs(a1 - a0) * r / 1.2));
+    // ~0.3 m chords: coarser ones show as straight segments on donuts and circles
+    const n = Math.max(12, Math.ceil(Math.abs(a1 - a0) * r / 0.3));
     for (let k = 0; k < n; k++) {
       const t0 = a0 + (a1 - a0) * k / n, t1 = a0 + (a1 - a0) * (k + 1) / n;
       const rr0 = r + (wobble ? wobble(t0) : 0), rr1 = r + (wobble ? wobble(t1) : 0);
@@ -366,6 +377,20 @@ export class Environment {
   // ---------------------------------------------------------------- colliders
   addColliderMesh(c) { return this.colliders.add(c); }
   removeColliderMesh(c) { this.colliders.remove(c); }
+}
+
+// Chain-link fence. On high (MSAA) it is opaque with alpha to coverage, so it
+// costs no blending and keeps its mip-faded look in the distance; elsewhere it
+// stays blended but in a single pass (a two-sided transparent material would
+// draw twice and recompile its parameters on every draw).
+function fenceMaterial(map, q) {
+  const o = { map, side: THREE.DoubleSide, roughness: 0.5, metalness: 0.5 };
+  // (no alphaTest with coverage: three would sharpen alpha into a hard cutoff)
+  const m = q === 'high'
+    ? new THREE.MeshStandardMaterial({ ...o, alphaToCoverage: true })
+    : litMaterial({ ...o, transparent: true, depthWrite: false, alphaTest: 0.02 }, q === 'low');
+  m.forceSinglePass = true;
+  return m;
 }
 
 // uvs = world x/z over tile size (for geometry already in world position)

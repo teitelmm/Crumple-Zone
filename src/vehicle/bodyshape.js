@@ -75,6 +75,21 @@ class Builder {
     this.glass = { windshield: [], rearGlass: [], leftGlass: [], rightGlass: [] };
     this.keys = new Map();
     this.surf = []; // triangles decals may snap to
+    // decal vertices glued to the skin: [vertex, a, b, c] + frame coefficients [s, t, h]
+    // (see glueInto); glueOf: vertex -> record
+    this.glueV = []; this.glueW = []; this.glueOf = new Map();
+  }
+  glue(v, a, b, c) {
+    const P = this.pos, p = (i) => [P[i * 3], P[i * 3 + 1], P[i * 3 + 2]];
+    const A = p(a), e1 = sub(p(b), A), e2 = sub(p(c), A), nn = cross(e1, e2), l = len(nn);
+    if (l < 1e-10) return;
+    const n = scl(nn, 1 / l), d = sub(p(v), A), h = dot(d, n), q = sub(d, scl(n, h));
+    const e11 = dot(e1, e1), e12 = dot(e1, e2), e22 = dot(e2, e2), det = e11 * e22 - e12 * e12;
+    if (det < 1e-16) return;
+    const q1 = dot(q, e1), q2 = dot(q, e2);
+    this.glueOf.set(v, this.glueV.length / 4);
+    this.glueV.push(v, a, b, c);
+    this.glueW.push((q1 * e22 - q2 * e12) / det, (q2 * e11 - q1 * e12) / det, h);
   }
   v(x, y, z, u = 0, w = 0) { this.pos.push(x, y, z); this.uv.push(u, w); return this.pos.length / 3 - 1; }
   kv(key, x, y, z, u, w) {
@@ -96,17 +111,25 @@ class Builder {
   }
 }
 
-// A detached piece of geometry (decal or solid), emitted once or mirrored.
+// A detached piece of geometry (decal or solid), emitted once or mirrored. Decal points
+// made by the detail kit's off() carry the skin triangle they sit on (p.tri); those
+// vertices are glued to that triangle so they follow the crumpled skin exactly.
 class Part {
   constructor() { this.v = []; this.t = []; }
-  add(p, u = 0, w = 0) { this.v.push([p[0], p[1], p[2], u, w]); return this.v.length - 1; }
+  add(p, u = 0, w = 0) { this.v.push([p[0], p[1], p[2], u, w, p.tri || null]); return this.v.length - 1; }
   tri(slot, a, b, c, nref) { this.t.push([slot, a, b, c, nref]); }
   quad(slot, a, b, c, d, nref) { this.tri(slot, a, b, c, nref); this.tri(slot, a, c, d, nref); }
 }
-function emitPart(B, part, mirror) {
+function emitPart(B, part, mirror, surf) {
   const base = B.pos.length / 3;
   const s = mirror ? -1 : 1;
-  for (const v of part.v) B.v(v[0], v[1], v[2] * s, v[3], v[4]);
+  for (const v of part.v) {
+    const i = B.v(v[0], v[1], v[2] * s, v[3], v[4]);
+    const t = v[5];
+    if (!t || !surf) continue;
+    const m = mirror ? t.map(k => surf.mirror(k)) : t;
+    if (m[0] >= 0 && m[1] >= 0 && m[2] >= 0) B.glue(i, m[0], m[1], m[2]);
+  }
   for (const [slot, a, b, c, nref] of part.t) {
     const nr = nref ? [nref[0], nref[1], nref[2] * s] : null;
     B.tri(slot, base + a, base + b, base + c, null, false, nr);
@@ -264,6 +287,36 @@ function buildLoft(B, S) {
     return x < cowlX - 0.004 && x > deckX + 0.004;
   };
   const low = V.lower;
+  // Grille openings: skin quads lying wholly inside a grille outline (in its view) are
+  // given the grille slot, so there is no painted shell under the grille decal that a
+  // few mm of crush could push through it.
+  const PROJ = { f: p => [p[2], p[1]], r: p => [p[2], p[1]], t: p => [p[0], p[2]], s: p => [p[0], p[1]] };
+  const AXIS = { f: 0, r: 0, t: 1, s: 2 };
+  const openings = [];
+  for (const e of V.details) {
+    if (e.t !== 'fill' || e.m !== 'grille' || ![...e.top, ...e.bot].every(p => !p[2])) continue;
+    const poly = [...e.top, ...[...e.bot].reverse()].map(p => [p[0], p[1]]);
+    openings.push({ v: e.v, poly });
+    if (e.mir) openings.push({ v: e.v, poly: poly.map(([a, b]) => (e.v === 't' ? [a, -b] : [-a, b])) });
+  }
+  const inPoly = (poly, a, b) => {
+    let inside = false;
+    for (let i = 0, k = poly.length - 1; i < poly.length; k = i++) {
+      const [ai, bi] = poly[i], [ak, bk] = poly[k];
+      if ((bi > b) !== (bk > b) && a < ai + (ak - ai) * (b - bi) / (bk - bi)) inside = !inside;
+    }
+    return inside;
+  };
+  const inOpening = (q) => {
+    if (!openings.length) return false;
+    const n = norm(cross(sub(q[2], q[0]), sub(q[1], q[0])));
+    const c = scl(add(add(q[0], q[1]), add(q[2], q[3])), 0.25);
+    return openings.some(({ v, poly }) => {
+      if (Math.abs(n[AXIS[v]]) < (v === 't' ? 0.5 : 0.25)) return false;
+      if ((v === 'f' && c[0] < fa) || (v === 'r' && c[0] > ra) || (v === 't' && c[1] < 0.45)) return false;
+      return q.every(p => { const [a, b] = PROJ[v](p); return inPoly(poly, a, b); });
+    });
+  };
   const mat = (r, j) => {
     if (j <= 3) return C.PLASTIC;
     const A = rings[r].pts, Bp = rings[r + 1].pts;
@@ -273,9 +326,11 @@ function buildLoft(B, S) {
       const end = rings[r].end || rings[r + 1].end;
       const yc = (q[0][1] + q[1][1] + q[2][1] + q[3][1]) / 4;
       const lim = end > 0 ? low.front : end < 0 ? low.rear : low.side;
+      if (inOpening(q)) return C.GRILLE;
       return yc < lim ? C.PLASTIC : C.PAINT;
     }
     if (j >= BELT && q.every(p => inCabin(p[0], p[2]))) return C.INTERIOR;
+    if (inOpening(q)) return C.GRILLE;
     return C.PAINT;
   };
   for (let r = 0; r < rings.length - 1; r++) {
@@ -459,8 +514,18 @@ class Surface {
     const a = T[t], b = T[t + 1], c = T[t + 2];
     const p = add(add(scl(this.vtx(a), u), scl(this.vtx(b), v)), scl(this.vtx(c), w));
     const n = norm(add(add(scl(this.nrm(a), u), scl(this.nrm(b), v)), scl(this.nrm(c), w)));
-    return { p, n };
+    return { p, n, tri: [a, b, c] };
   }
+  // a skin vertex at the mirror image (z -> -z) of vertex i, or -1
+  mirror(i) {
+    if (!this.mir) {
+      this.mir = new Map();
+      for (const k of this.T) this.mir.set(this.pkey(this.P[k * 3], this.P[k * 3 + 1], this.P[k * 3 + 2]), k);
+    }
+    const j = this.mir.get(this.pkey(this.P[i * 3], this.P[i * 3 + 1], -this.P[i * 3 + 2]));
+    return j === undefined ? -1 : j;
+  }
+  pkey(x, y, z) { return `${Math.round(x * 1e5)},${Math.round(y * 1e5)},${Math.round(z * 1e5) || 0}`; }
   // nearest hit along a ray (Moller-Trumbore), or null
   raycast(o, dir, far = false) {
     const T = this.T;
@@ -561,7 +626,7 @@ function makeDetailKit(S, surf) {
   const plen = pts => { let l = 0; for (let i = 1; i < pts.length; i++) l += len(sub(pts[i], pts[i - 1])); return l; };
   const snap = (p) => surf.closest(p);
   const offK = S.lod === 'low' ? 1.5 : 1;
-  const off = (s, o) => add(s.p, scl(s.n, o * offK));
+  const off = (s, o) => { const p = add(s.p, scl(s.n, o * offK)); p.tri = s.tri; return p; };
   const centroid = pts => scl(pts.reduce((a, p) => add(a, p), [0, 0, 0]), 1 / pts.length);
   const coarse = S.lod === 'low';
 
@@ -569,11 +634,17 @@ function makeDetailKit(S, surf) {
   const fill = (part, e, slot) => {
     const top = e.top.map(p => anchor(e.v, p)), bot = e.bot.map(p => anchor(e.v, p));
     const W = Math.max(plen(top), plen(bot));
-    const Hh = (len(sub(top[0], bot[0])) + len(sub(top[top.length - 1], bot[bot.length - 1])) + len(sub(top[top.length >> 1], bot[bot.length >> 1]))) / 3;
     const k = e.uv ? 1.3 : 1;
     const cols = clamp(Math.ceil(W / ((coarse ? 0.05 : 0.04) * k)), 1, 26);
-    const rows = clamp(Math.ceil(Hh / ((coarse ? 0.08 : 0.06) * k)), 1, 6);
     const T = resample(top, cols + 1), Bt = resample(bot, cols + 1);
+    // rows from the tallest column (outlines that pinch to a point at the ends, like the
+    // Audi grille, must not average down to a 2-row patch that the curved skin bulges
+    // through); short spans keep the decal on the surface
+    let Hmax = 0;
+    for (let c = 0; c <= cols; c++) Hmax = Math.max(Hmax, len(sub(T[c], Bt[c])));
+    const rows = clamp(Math.ceil(Hmax / (coarse ? 0.075 : 0.05)), 1, 12);
+    // texture scale (slat / mesh pitch) as the outlines were tuned for
+    const Hh = (len(sub(top[0], bot[0])) + len(sub(top[top.length - 1], bot[bot.length - 1])) + len(sub(top[top.length >> 1], bot[bot.length >> 1]))) / 3;
     const grid = [];
     for (let r = 0; r <= rows; r++) {
       const row = [];
@@ -725,10 +796,10 @@ function buildDetails(B, S, surf) {
       }
     }
     const both = e.side !== -1 && (e.mir || e.t === 'mirror' || e.t === 'handle');
-    if (e.side === -1) emitPart(B, part, true);
+    if (e.side === -1) emitPart(B, part, true, surf);
     else {
-      emitPart(B, part, false);
-      if (both) emitPart(B, part, true);
+      emitPart(B, part, false, surf);
+      if (both) emitPart(B, part, true, surf);
     }
   }
 }
@@ -831,26 +902,64 @@ export function buildBodyMesh(spec, tpl, lod = 'high') {
   buildDetails(B, S, surf); mark('details');
   buildInterior(B, S, gh); mark('interior');
   stats.rings = S.rings.length;
+  splitBySlot(B);
 
   const positions = new Float32Array(B.pos);
   const nv = positions.length / 3;
   const groups = [];
   const all = [];
-  for (let s = 0; s < SLOT_COUNT; s++) {
+  for (const s of SLOT_ORDER) {
     const start = all.length;
     if (s === C.GLASS) {
       const glass = {};
-      for (const p of PANELS) { glass[p] = { start: all.length, count: B.glass[p].length }; all.push(...B.glass[p]); }
+      for (const p of PANELS) { glass[p] = { start: all.length, count: B.glass[p].length }; for (const i of B.glass[p]) all.push(i); }
       groups.push({ start, count: all.length - start, slot: s });
       groups.glass = glass;
     } else {
-      all.push(...B.idx[s]);
+      for (const i of B.idx[s]) all.push(i);
       groups.push({ start, count: all.length - start, slot: s });
     }
   }
   const indices = nv < 65536 ? Uint16Array.from(all) : Uint32Array.from(all);
   const binding = bindToLattice(positions, tpl);
-  return { positions, uvs: new Float32Array(B.uv), indices, groups, glass: groups.glass, binding, vertexCount: nv, stats };
+  const glue = { v: Int32Array.from(B.glueV), w: Float32Array.from(B.glueW) };
+  stats.glued = B.glueV.length / 4;
+  return { positions, uvs: new Float32Array(B.uv), indices, groups, glass: groups.glass, binding, glue, vertexCount: nv, stats };
+}
+
+// Index-buffer order of the material slots. Slots the renderer may draw with one shared
+// vertex-attribute material (see carmaterials.js BAKED) sit next to each other so their
+// draw groups merge: textured slots first, then the clear-coated ones the high tier keeps
+// separate, then the plain ones; interior (skipped on phones) last before the glass.
+export const SLOT_ORDER = [C.PAINT, C.GRILLE, C.PLATE, C.TRIM, C.LAMP, C.TAIL, C.SOFT, C.PLASTIC,
+  C.CHROME, C.AMBER, C.HEAD, C.TAILLED, C.INTERIOR, C.GLASS];
+
+// Give every vertex a single material slot (solids such as mirrors and exhausts share
+// vertices between slots), so per-slot vertex attributes are well defined.
+function splitBySlot(B) {
+  const owner = new Map(), dup = new Map();
+  const claim = (v, s) => {
+    const o = owner.get(v);
+    if (o === undefined) { owner.set(v, s); return v; }
+    if (o === s) return v;
+    const k = v * 16 + s;
+    let n = dup.get(k);
+    if (n === undefined) {
+      n = B.v(B.pos[v * 3], B.pos[v * 3 + 1], B.pos[v * 3 + 2], B.uv[v * 2], B.uv[v * 2 + 1]);
+      dup.set(k, n);
+      const g = B.glueOf.get(v);
+      if (g !== undefined) {
+        B.glueOf.set(n, B.glueV.length / 4);
+        B.glueV.push(n, B.glueV[g * 4 + 1], B.glueV[g * 4 + 2], B.glueV[g * 4 + 3]);
+        B.glueW.push(B.glueW[g * 3], B.glueW[g * 3 + 1], B.glueW[g * 3 + 2]);
+      }
+    }
+    return n;
+  };
+  for (let s = 0; s < SLOT_COUNT; s++) {
+    const list = s === C.GLASS ? PANELS.map(p => B.glass[p]) : [B.idx[s]];
+    for (const l of list) for (let i = 0; i < l.length; i++) l[i] = claim(l[i], s);
+  }
 }
 
 // --- tetrahedral binding ---
@@ -947,5 +1056,26 @@ export function deformInto(out, binding, x) {
     out[v * 3] = x[a] * wa + x[b] * wb + x[c] * wc + x[d] * wd;
     out[v * 3 + 1] = x[a + 1] * wa + x[b + 1] * wb + x[c + 1] * wc + x[d + 1] * wd;
     out[v * 3 + 2] = x[a + 2] * wa + x[b + 2] * wb + x[c + 2] * wc + x[d + 2] * wd;
+  }
+}
+
+// Glue decal vertices (lights, grilles, plates, panel gaps, trim strips) to the deformed
+// skin: each sits at fixed coordinates in the frame of the skin triangle it was snapped
+// to (two edges + unit normal), so it keeps its few-mm offset above the paint however
+// the panel crumples. Run after deformInto, on the same array.
+export function glueInto(out, glue) {
+  const V = glue.v, W = glue.w;
+  for (let k = 0, j = 0; k < V.length; k += 4, j += 3) {
+    const a = V[k + 1] * 3, b = V[k + 2] * 3, c = V[k + 3] * 3;
+    const ax = out[a], ay = out[a + 1], az = out[a + 2];
+    const e1x = out[b] - ax, e1y = out[b + 1] - ay, e1z = out[b + 2] - az;
+    const e2x = out[c] - ax, e2y = out[c + 1] - ay, e2z = out[c + 2] - az;
+    const nx = e1y * e2z - e1z * e2y, ny = e1z * e2x - e1x * e2z, nz = e1x * e2y - e1y * e2x;
+    const l = Math.sqrt(nx * nx + ny * ny + nz * nz);
+    if (l < 1e-9) continue; // collapsed triangle: keep the skinned position
+    const s = W[j], t = W[j + 1], h = W[j + 2] / l, v = V[k] * 3;
+    out[v] = ax + s * e1x + t * e2x + h * nx;
+    out[v + 1] = ay + s * e1y + t * e2y + h * ny;
+    out[v + 2] = az + s * e1z + t * e2z + h * nz;
   }
 }

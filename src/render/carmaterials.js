@@ -1,10 +1,18 @@
 // Car materials: clear-coated paint with a damage layer, tinted glass, trim, lights,
-// plates. Shared materials are cached per quality tier; paint and tail lights are per car
-// (colour and brake state differ).
+// plates. Shared materials are cached per quality tier; paint, tail lights and the baked
+// "rest" material are per car (colour and brake state differ) and are pooled, not
+// disposed, so a restart or showcase switch never recompiles their shader programs.
+//
+// Draw-call budget: the plain (untextured) slots of a tier are not separate materials.
+// Their colour, roughness, metalness and emission are baked into vertex attributes
+// (bakeAttributes) and drawn with one MeshStandardMaterial, so a car body costs
+// paint + rest + glass on phones (plus grille / plate and the clear-coated trim, lamps
+// and tail lenses on the higher tiers).
 import * as THREE from 'three';
 import { C, SLOT_COUNT } from '../vehicle/bodyshape.js';
 
 export const CRACKED = SLOT_COUNT; // material index of shattered glass
+export const GLASS_BACK = SLOT_COUNT + 1; // inner faces of the glass (high: seen through the cabin)
 
 function canvas(w, h) {
   const c = document.createElement('canvas');
@@ -95,22 +103,6 @@ function crackTexture() {
   return (crackTex = tex(c));
 }
 
-let fabricTex = null;
-function fabricTexture() {
-  if (fabricTex) return fabricTex;
-  const S = 128, c = canvas(S, S), g = c.getContext('2d');
-  const R = rng(3);
-  g.fillStyle = '#2d2d30'; g.fillRect(0, 0, S, S);
-  for (let y = 0; y < S; y += 2) for (let x = 0; x < S; x += 2) {
-    const v = ((x + y) / 2) % 2 ? 0.07 : -0.05;
-    const l = 45 + (v + (R() - 0.5) * 0.1) * 120;
-    g.fillStyle = `rgb(${l},${l},${l + 2})`; g.fillRect(x, y, 2, 2);
-  }
-  const t = tex(c, { repeat: true });
-  t.repeat.set(1, 1);
-  return (fabricTex = t);
-}
-
 // --- paint damage: crease darkening, grime and streaky bare-metal scuffs where the
 // lattice around a vertex has deformed (per-vertex `damage` attribute, 0..1)
 const NOISE = `
@@ -139,9 +131,24 @@ const HORIZON_SO = `
 function horizonSO(sh) {
   sh.fragmentShader = sh.fragmentShader.replace('#include <lights_fragment_maps>', '#include <lights_fragment_maps>' + HORIZON_SO);
 }
+// Cap the sun's direct specular. A glossy panel near the sun's mirror direction would
+// otherwise reach hundreds of times the bloom threshold and smear a whole panel (or a
+// 1-px glint) into a white blob. Paint's base layer (the flakes under the clear coat) is
+// held just below white: seen toward the sun at a grazing angle its broad lobe would
+// otherwise clip a whole boot lid; the clear coat and trim keep a bright, bloomable glint.
+const specCap = (base) => `
+  reflectedLight.directSpecular = min( reflectedLight.directSpecular, vec3( ${base.toFixed(1)} ) );
+  #ifdef USE_CLEARCOAT
+    clearcoatSpecularDirect = min( clearcoatSpecularDirect, vec3( 40.0 ) );
+  #endif`;
+const CAP_PAINT = specCap(2.5), CAP_GLOSS = specCap(40);
+function capSpec(sh, cap = CAP_GLOSS) {
+  sh.fragmentShader = sh.fragmentShader.replace('#include <lights_fragment_begin>', '#include <lights_fragment_begin>' + cap);
+}
+function glossShader(sh) { horizonSO(sh); capSpec(sh); }
 
 function paintDamageHi(sh) {
-  horizonSO(sh);
+  horizonSO(sh); capSpec(sh, CAP_PAINT);
   sh.vertexShader = sh.vertexShader
     .replace('#include <common>', '#include <common>\nattribute float damage;\nvarying float vDamage;\nvarying vec3 vCarPos;')
     .replace('#include <begin_vertex>', '#include <begin_vertex>\nvDamage = damage;\nvCarPos = position;');
@@ -151,13 +158,15 @@ function paintDamageHi(sh) {
       diffuseColor.rgb *= 0.78 + 0.22 * smoothstep(0.1, 0.48, vCarPos.y); // ground occlusion
       float czD = smoothstep(0.06, 0.9, vDamage);
       if (czD > 0.002) {
-        // dull, darkened paint in creased areas; a few long horizontal scrapes to bare metal
+        // dull, darkened paint in creased areas; a few long horizontal scrapes to bare
+        // metal (a few cm tall, faded out where they would shrink below a pixel)
         float n2 = czNoise(vCarPos * vec3(9.0, 7.0, 9.0) + 3.7);
-        float n1 = czNoise(vCarPos * vec3(2.5, 70.0, 70.0));
-        float czBare = smoothstep(0.8, 0.9, n1) * smoothstep(0.55, 1.0, czD) * step(0.45, n2);
+        float n1 = czNoise(vCarPos * vec3(2.0, 14.0, 14.0));
+        float czBare = smoothstep(0.72, 0.92, n1) * smoothstep(0.55, 1.0, czD) * step(0.45, n2);
+        czBare *= 1.0 - smoothstep(0.02, 0.08, fwidth(n1));
         diffuseColor.rgb *= 1.0 - czD * (0.3 + 0.25 * n2);
         diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.34, 0.34, 0.35), czBare);
-        roughnessFactor = mix(mix(roughnessFactor, 0.62, czD * 0.8), 0.42, czBare);
+        roughnessFactor = mix(mix(roughnessFactor, 0.62, czD * 0.8), 0.55, czBare);
         metalnessFactor = mix(metalnessFactor, 0.85, czBare);
       }`)
     .replace('#include <lights_physical_fragment>', `#include <lights_physical_fragment>
@@ -166,7 +175,7 @@ function paintDamageHi(sh) {
       #endif`);
 }
 function paintDamageLo(sh) {
-  horizonSO(sh);
+  horizonSO(sh); capSpec(sh, CAP_PAINT);
   sh.vertexShader = sh.vertexShader
     .replace('#include <common>', '#include <common>\nattribute float damage;\nvarying float vDamage;\nvarying float vCarY;')
     .replace('#include <begin_vertex>', '#include <begin_vertex>\nvDamage = damage;\nvCarY = position.y;');
@@ -193,73 +202,209 @@ function glassFresnel(sh) {
     .replace('#include <premultiplied_alpha_fragment>', '');
 }
 
+// --- per-vertex PBR: roughness / metalness from a `czRM` attribute (vec2), colour from
+// vertex colours. Used for the merged wheel (tyre + rim finishes in one draw) and, with
+// emission, for the baked body slots.
+const RM_DECL = 'attribute vec2 czRM;\nvarying vec2 vCzRM;';
+export function vertexRM(sh) {
+  sh.vertexShader = sh.vertexShader
+    .replace('#include <common>', '#include <common>\n' + RM_DECL)
+    .replace('#include <begin_vertex>', '#include <begin_vertex>\nvCzRM = czRM;');
+  sh.fragmentShader = sh.fragmentShader
+    .replace('#include <common>', '#include <common>\nvarying vec2 vCzRM;')
+    .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = vCzRM.x;')
+    .replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\nmetalnessFactor = vCzRM.y;');
+}
+// baked body slots: + emission (`czEmit`: rgb = radiance with the brakes off, a = factor
+// when braking) and the per-car brake uniform
+function restShader(sh) {
+  horizonSO(sh); capSpec(sh);
+  sh.uniforms.czBrake = this.userData.czBrake;
+  sh.vertexShader = sh.vertexShader
+    .replace('#include <common>', '#include <common>\n' + RM_DECL + '\nattribute vec4 czEmit;\nvarying vec4 vCzEmit;')
+    .replace('#include <begin_vertex>', '#include <begin_vertex>\nvCzRM = czRM;\nvCzEmit = czEmit;');
+  sh.fragmentShader = sh.fragmentShader
+    .replace('#include <common>', '#include <common>\nuniform float czBrake;\nvarying vec2 vCzRM;\nvarying vec4 vCzEmit;')
+    .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = vCzRM.x;')
+    .replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\nmetalnessFactor = vCzRM.y;')
+    .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance = vCzEmit.rgb * mix( 1.0, vCzEmit.a, czBrake );');
+}
+
+// --- baked slots. `e` = emissive colour, `ei` = its intensity with the brakes off,
+// `eb` = intensity while braking (tail lights). The soft top's fabric is drawn without
+// texture coordinates on every tier, so it is a plain colour (the fabric's mean).
+const PLAIN = { c: '#0b0c0d', r: 0.45, m: 0 };
+const AMBER = { c: '#d0700f', r: 0.25, m: 0, e: '#ff7a0a', ei: 0.15 };
+const HEAD = { c: '#ffffff', r: 0.2, m: 0, e: '#eef4ff', ei: 2.6 };
+const SOFT = { c: '#2e2e30', r: 0.95, m: 0 };
+const LOOK_LOW = {
+  [C.TRIM]: PLAIN, [C.PLASTIC]: PLAIN, [C.GRILLE]: PLAIN, [C.INTERIOR]: PLAIN,
+  [C.SOFT]: { c: '#2a2a2c', r: 0.9, m: 0 },
+  [C.CHROME]: { c: '#f1f3f5', r: 0.1, m: 1 }, [C.LAMP]: { c: '#f1f3f5', r: 0.1, m: 1 },
+  [C.AMBER]: AMBER, [C.HEAD]: HEAD,
+  [C.TAIL]: { c: '#600409', r: 0.25, m: 0, e: '#ff0602', ei: 0.08, eb: 1.0 },
+  [C.TAILLED]: { c: '#600409', r: 0.25, m: 0, e: '#ff0602', ei: 0.08, eb: 1.0 },
+  [C.PLATE]: { c: '#ffffff', r: 0.42, m: 0.05 },
+};
+const LOOK_HI = {
+  [C.TRIM]: { c: '#060708', r: 0.2, m: 0 },
+  [C.LAMP]: { c: '#c5cad0', r: 0.2, m: 1 },
+  [C.TAIL]: { c: '#5a0307', r: 0.22, m: 0, e: '#ff0602', ei: 0.05, eb: 0.7 },
+  [C.SOFT]: SOFT,
+  [C.PLASTIC]: { c: '#111213', r: 0.8, m: 0 },
+  [C.CHROME]: { c: '#f1f3f5', r: 0.1, m: 1 },
+  [C.AMBER]: AMBER, [C.HEAD]: HEAD,
+  [C.TAILLED]: { c: '#3a0306', r: 0.3, m: 0, e: '#ff0804', ei: 0.35, eb: 3.2 },
+  [C.INTERIOR]: { c: '#1a1a1c', r: 0.85, m: 0 },
+};
+// slots drawn by the baked material, per tier (contiguous in bodyshape SLOT_ORDER)
+const BAKED = {
+  low: [C.GRILLE, C.PLATE, C.TRIM, C.LAMP, C.TAIL, C.SOFT, C.PLASTIC, C.CHROME, C.AMBER, C.HEAD, C.TAILLED, C.INTERIOR],
+  medium: [C.TRIM, C.LAMP, C.TAIL, C.SOFT, C.PLASTIC, C.CHROME, C.AMBER, C.HEAD, C.TAILLED, C.INTERIOR],
+  high: [C.SOFT, C.PLASTIC, C.CHROME, C.AMBER, C.HEAD, C.TAILLED, C.INTERIOR],
+};
+const tierOf = q => (q === 'low' ? 'low' : q === 'medium' ? 'medium' : 'high');
+
+// Static per-vertex attribute arrays for the baked slots of one body mesh (shared by every
+// car of that model and tier; each car wraps them in its own BufferAttributes, since
+// disposing a geometry deletes the GL buffers of all its attributes). On phones the number plate is part of it too, through an
+// atlas whose bottom strip is white: plate vertices map into the plate, the others onto
+// the strip.
+const bakeCache = new WeakMap();
+export function bakeAttributes(src, quality) {
+  const tier = tierOf(quality);
+  let byTier = bakeCache.get(src);
+  if (!byTier) bakeCache.set(src, byTier = {});
+  if (byTier[tier]) return byTier[tier];
+  const nv = src.vertexCount, look = tier === 'low' ? LOOK_LOW : LOOK_HI, baked = new Set(BAKED[tier]);
+  const col = new Float32Array(nv * 3), rm = new Float32Array(nv * 2), emit = new Float32Array(nv * 4);
+  const uv = tier === 'low' ? src.uvs.slice() : null;
+  const c = new THREE.Color(), e = new THREE.Color();
+  for (const gr of src.groups) {
+    if (!baked.has(gr.slot) || !gr.count) continue;
+    const L = look[gr.slot];
+    c.set(L.c);
+    if (L.e) e.set(L.e).multiplyScalar(L.ei); else e.setRGB(0, 0, 0);
+    const brake = L.e && L.eb ? L.eb / L.ei : 1;
+    for (let i = gr.start; i < gr.start + gr.count; i++) {
+      const v = src.indices[i];
+      col[v * 3] = c.r; col[v * 3 + 1] = c.g; col[v * 3 + 2] = c.b;
+      rm[v * 2] = L.r; rm[v * 2 + 1] = L.m;
+      emit[v * 4] = e.r; emit[v * 4 + 1] = e.g; emit[v * 4 + 2] = e.b; emit[v * 4 + 3] = brake;
+      if (uv) {
+        if (gr.slot === C.PLATE) uv[v * 2 + 1] = PLATE_V0 + (1 - PLATE_V0) * src.uvs[v * 2 + 1];
+        else { uv[v * 2] = 0.5; uv[v * 2 + 1] = PLATE_V0 / 2; }
+      }
+    }
+  }
+  return (byTier[tier] = { color: col, czRM: rm, czEmit: emit, uv });
+}
+
+const PLATE_V0 = 32 / 160; // atlas: plate in the top 128 rows, white strip below
+let plateAtlasTex = null;
+function plateAtlas() {
+  if (plateAtlasTex) return plateAtlasTex;
+  const c = canvas(256, 160), g = c.getContext('2d');
+  g.fillStyle = '#ffffff'; g.fillRect(0, 0, 256, 160);
+  g.drawImage(plateTexture().image, 0, 0);
+  return (plateAtlasTex = tex(c));
+}
+
 const shared = new Map();
 function sharedMaterials(quality) {
   if (shared.has(quality)) return shared.get(quality);
-  const hi = quality !== 'low';
-  const M = THREE.MeshStandardMaterial, P = hi ? THREE.MeshPhysicalMaterial : THREE.MeshStandardMaterial;
+  const tier = tierOf(quality), hi = tier !== 'low';
+  const M = THREE.MeshStandardMaterial, P = THREE.MeshPhysicalMaterial;
   const s = {};
-  s.trim = hi ? new P({ color: '#060708', roughness: 0.16, clearcoat: 1, clearcoatRoughness: 0.04 }) : new M({ color: '#0b0c0d', roughness: 0.45 });
-  s.plastic = new M({ color: '#111213', roughness: 0.8 });
-  s.soft = new M({ color: '#ffffff', roughness: 0.96, map: hi ? fabricTexture() : null });
-  if (!hi) s.soft.color.set('#1c1c1e');
-  s.interior = new M({ color: '#1a1a1c', roughness: 0.85 });
-  s.chrome = new M({ color: '#f1f3f5', metalness: 1, roughness: 0.07 });
-  s.lamp = hi ? new P({ color: '#c5cad0', metalness: 1, roughness: 0.2, clearcoat: 1, clearcoatRoughness: 0.02 }) : new M({ color: '#b5bac0', metalness: 0.9, roughness: 0.25 });
-  s.amber = new M({ color: '#d0700f', roughness: 0.25, emissive: '#ff7a0a', emissiveIntensity: 0.15 });
-  s.head = new M({ color: '#ffffff', roughness: 0.2, emissive: '#eef4ff', emissiveIntensity: 2.6 });
-  s.plate = new M({ map: plateTexture(), roughness: 0.42, metalness: 0.05 });
-  s.glass = hi
-    // double-sided on high: the far windows are seen from inside the cabin, so the view
-    // through the car passes two tinted panes as it does in reality (one extra draw per car)
-    ? new P({ color: '#0b1115', roughness: 0.015, metalness: 0, ior: 1.65, transparent: true, premultipliedAlpha: true, opacity: 0.74, envMapIntensity: 1.25, depthWrite: false, side: quality === 'high' ? THREE.DoubleSide : THREE.FrontSide })
-    : new M({ color: '#0d1317', roughness: 0.06, metalness: 0.3, envMapIntensity: 1.4 });
-  s.glass.onBeforeCompile = hi ? glassFresnel : horizonSO;
-  s.trim.onBeforeCompile = horizonSO;
+  if (tier === 'high') {
+    s.trim = new P({ color: '#060708', roughness: 0.16, clearcoat: 1, clearcoatRoughness: 0.04 });
+    s.lamp = new P({ color: '#c5cad0', metalness: 1, roughness: 0.2, clearcoat: 1, clearcoatRoughness: 0.03 });
+    s.trim.onBeforeCompile = s.lamp.onBeforeCompile = glossShader;
+  }
+  if (hi) s.plate = new M({ map: plateTexture(), roughness: 0.42, metalness: 0.05 });
+  if (hi) {
+    s.glass = new P({ color: '#0b1115', roughness: 0.04, metalness: 0, ior: 1.65, transparent: true, premultipliedAlpha: true, opacity: 0.74, envMapIntensity: 1.25, depthWrite: false });
+    s.glass.onBeforeCompile = glassFresnel;
+    // high: the far windows are also drawn from inside the cabin, so the view through the
+    // car passes two tinted panes as it does in reality. A separate back-face material
+    // (drawn first) instead of DoubleSide, which three would re-version twice per draw.
+    if (tier === 'high') {
+      s.glassBack = s.glass.clone();
+      s.glassBack.side = THREE.BackSide;
+      s.glassBack.onBeforeCompile = glassFresnel;
+    }
+  } else {
+    s.glass = new M({ color: '#0d1317', roughness: 0.06, metalness: 0.3, envMapIntensity: 1.4 });
+    s.glass.onBeforeCompile = horizonSO;
+  }
   s.cracked = new M({ map: crackTexture(), color: '#e3e8ec', roughness: 0.5, metalness: 0.05 });
-  if (!hi) { s.plastic = s.trim; s.interior = s.trim; s.lamp = s.chrome; s.soft.roughness = 0.9; s.soft.color.set('#2a2a2c'); }
   shared.set(quality, s);
   return s;
 }
 
 const grilleMats = new Map();
-function grilleMaterial(spec, quality) {
-  const key = spec.id + ':' + quality;
-  if (grilleMats.has(key)) return grilleMats.get(key);
+function grilleMaterial(spec) {
+  if (grilleMats.has(spec.id)) return grilleMats.get(spec.id);
   const kind = spec.visual.grille || { a4: 'slats', mustang: 'honeycomb' }[spec.id] || 'mesh';
-  const m = quality === 'low'
-    ? sharedMaterials(quality).trim
-    : new THREE.MeshStandardMaterial({ map: grilleTexture(kind), roughness: 0.45, metalness: 0.4 });
-  grilleMats.set(key, m);
+  const m = new THREE.MeshStandardMaterial({ map: grilleTexture(kind), roughness: 0.45, metalness: 0.4 });
+  grilleMats.set(spec.id, m);
   return m;
 }
 
-export function makeCarMaterials(spec, quality, paintHex) {
-  const hi = quality !== 'low';
-  const s = sharedMaterials(quality);
-  const vp = spec.visual.paint;
-  const metal = paintHex === spec.color ? vp.metal : 0.45;
-  const rough = paintHex === spec.color ? vp.rough : 0.36;
+// per-car materials (paint, baked rest, high-tier tail lens), pooled per tier
+const pools = new Map();
+function newCarSet(tier) {
+  const hi = tier !== 'low';
   const paint = hi
-    ? new THREE.MeshPhysicalMaterial({ color: paintHex, metalness: metal, roughness: rough, clearcoat: 1, clearcoatRoughness: 0.03 })
-    : new THREE.MeshStandardMaterial({ color: paintHex, metalness: metal * 0.8, roughness: Math.min(0.45, rough + 0.04) });
+    ? new THREE.MeshPhysicalMaterial({ clearcoat: 1, clearcoatRoughness: 0.06 })
+    : new THREE.MeshStandardMaterial();
   paint.onBeforeCompile = hi ? paintDamageHi : paintDamageLo;
-  const tail = hi
-    ? new THREE.MeshPhysicalMaterial({ color: '#5a0307', roughness: 0.22, clearcoat: 1, clearcoatRoughness: 0.03, emissive: '#ff0602', emissiveIntensity: 0.06 })
-    : new THREE.MeshStandardMaterial({ color: '#600409', roughness: 0.25, emissive: '#ff0602', emissiveIntensity: 0.1 });
-  const tailLed = hi ? new THREE.MeshStandardMaterial({ color: '#3a0306', roughness: 0.3, emissive: '#ff0804', emissiveIntensity: 0.4 }) : tail;
-  const list = new Array(SLOT_COUNT + 1);
-  list[C.PAINT] = paint; list[C.TRIM] = s.trim; list[C.PLASTIC] = s.plastic; list[C.GRILLE] = grilleMaterial(spec, quality);
-  list[C.SOFT] = s.soft; list[C.INTERIOR] = s.interior; list[C.CHROME] = s.chrome; list[C.LAMP] = s.lamp;
-  list[C.AMBER] = s.amber; list[C.HEAD] = s.head; list[C.TAIL] = tail; list[C.TAILLED] = tailLed;
-  list[C.PLATE] = s.plate; list[C.GLASS] = s.glass; list[CRACKED] = s.cracked;
-  const own = [paint, tail];
-  if (tailLed !== tail) own.push(tailLed);
+  const rest = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, metalness: 0, map: hi ? null : plateAtlas() });
+  rest.userData.czBrake = { value: 0 };
+  rest.onBeforeCompile = restShader;
+  let tail = null;
+  if (tier === 'high') {
+    tail = new THREE.MeshPhysicalMaterial({ color: '#5a0307', roughness: 0.22, clearcoat: 1, clearcoatRoughness: 0.03, emissive: '#ff0602', emissiveIntensity: 0.05 });
+    tail.onBeforeCompile = glossShader;
+  }
+  return { paint, rest, tail };
+}
+
+export function makeCarMaterials(spec, quality, paintHex) {
+  const tier = tierOf(quality), hi = tier !== 'low';
+  const s = sharedMaterials(tier);
+  if (!pools.has(tier)) pools.set(tier, []);
+  const pool = pools.get(tier);
+  const set = pool.pop() || newCarSet(tier);
+  const { paint, rest, tail } = set;
+  // Metallic paint is a dielectric base with a little flake under a sharp clear coat:
+  // keeping base metalness low and its lobe broad stops whole panels clipping to white
+  // when the car is between the camera and the sun; the clear coat carries the gloss.
+  const vp = spec.visual.paint, own = paintHex === spec.color;
+  const metal = own ? vp.metal : 0.45, rough = own ? vp.rough : 0.36;
+  paint.color.set(paintHex);
+  if (hi) { paint.metalness = Math.min(0.2, metal * 0.35); paint.roughness = Math.max(0.42, rough + 0.1); paint.specularIntensity = 0.6; }
+  else { paint.metalness = metal * 0.5; paint.roughness = Math.min(0.48, Math.max(0.4, rough + 0.06)); }
+
+  const list = new Array(SLOT_COUNT + 2).fill(null);
+  for (const k of BAKED[tier]) list[k] = rest;
+  list[C.PAINT] = paint;
+  if (tier === 'high') { list[C.TRIM] = s.trim; list[C.LAMP] = s.lamp; list[C.TAIL] = tail; }
+  if (hi) { list[C.GRILLE] = grilleMaterial(spec); list[C.PLATE] = s.plate; }
+  list[C.GLASS] = s.glass; list[CRACKED] = s.cracked; list[GLASS_BACK] = s.glassBack || null;
+  let released = false;
   return {
-    list, paint, tail, tailLed, own,
+    list, paint, rest, tail, doubleGlass: !!s.glassBack,
     setBrake(on) {
-      tail.emissiveIntensity = on ? (hi ? 0.7 : 1.0) : (hi ? 0.05 : 0.08);
-      if (tailLed !== tail) tailLed.emissiveIntensity = on ? 3.2 : 0.35;
+      rest.userData.czBrake.value = on ? 1 : 0;
+      if (tail) tail.emissiveIntensity = on ? 0.7 : 0.05;
+    },
+    // back to the pool: the materials (and so their compiled programs) stay alive
+    release() {
+      if (released) return;
+      released = true;
+      rest.userData.czBrake.value = 0;
+      pool.push(set);
     },
   };
 }

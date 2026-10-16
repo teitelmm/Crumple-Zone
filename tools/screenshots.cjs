@@ -49,7 +49,7 @@ const SCENES = [
     await page.route(/fonts\.(googleapis|gstatic)\.com/, r => r.abort());
     const t0 = Date.now();
     await page.goto(base, { waitUntil: 'load' });
-    await page.waitForFunction(() => window.game && window.game.view, null, { timeout: 60000 }).catch(() => errors.push('game did not start'));
+    await page.waitForFunction(() => window.game && window.game.view && window.game.started !== false, null, { timeout: 120000 }).catch(() => errors.push('game did not start'));
     await page.waitForTimeout(1500);
     const info = await page.evaluate(async (sc) => {
       const g = window.game;

@@ -286,20 +286,24 @@ function grassMaps(S, aniso) {
 }
 
 // Dense aggregate set in a dark binder: every pixel belongs to a stone (Worley
-// cell, ~12 mm at 1024 px / 4 m) with its own grey; the binder shows in the
-// gaps and where the surface is less worn. Cracks are left to the shader, in
-// world space, so they never repeat with the tile.
+// cell, ~4.6 px) with its own grey; the binder shows in the gaps and where the
+// surface is less worn. Cracks are left to the shader, in world space, so they
+// never repeat with the tile. The stone size in metres is fixed by the caller
+// (makeTextures halves the tile at 512 px, so every tier gets ~18 mm stones).
 function asphaltMaps(S, aniso, seed, base) {
   const r = rng(seed);
   const N = S * S;
   const mid = field(S, 'lo', 1);
   const fine = field(S, 'hi', 1);
+  // smaller tiles (512 px = 2 m) repeat more often: keep the wear mottling subtle
+  const wearAmt = S >= 1024 ? 0.45 : 0.25;
   const W = worley(S, Math.round(S / 4.6), r);
-  // per-stone tone and hue (most mid / dark grey, a few light quartz, some brownish)
+  // per-stone tone and hue (narrow grey range so the surface reads as fine dark
+  // grain at chase distance; a few light quartz, some brownish)
   const tone = new Float32Array(1024), hue = new Float32Array(1024);
   for (let k = 0; k < 1024; k++) {
     const u = r();
-    tone[k] = u < 0.06 ? 1.5 + r() * 0.25 : 0.72 + Math.pow(r(), 1.4) * 0.55;
+    tone[k] = u < 0.03 ? 1.12 + r() * 0.16 : 0.8 + Math.pow(r(), 1.4) * 0.35;
     hue[k] = r() < 0.2 ? 0.04 + r() * 0.03 : (r() - 0.5) * 0.02;
   }
   const col = new Float32Array(N * 3), H = new Float32Array(N), R = new Float32Array(N);
@@ -308,12 +312,12 @@ function asphaltMaps(S, aniso, seed, base) {
     const gap = smooth(0.2, 1.4, W.f2[i] - W.f1[i]);
     const dome = clamp01(1 - W.f1[i] / (W.cs * 0.85));
     // worn surface: aggregate tops exposed; fresher areas keep more binder
-    const wear = 0.55 + 0.45 * smooth(0.25, 0.75, mid[i]);
+    const wear = 1 - wearAmt + wearAmt * smooth(0.25, 0.75, mid[i]);
     const ex = gap * (0.35 + 0.65 * dome) * wear;
     const v = base * 1.32 * (0.62 + (tone[s] - 0.62) * ex) * (0.94 + 0.12 * mid[i]) + (fine[i] - 0.5) * 0.03 + (r() - 0.5) * 0.035;
     const h = hue[s] * ex;
     col[i * 3] = v * (1.02 + h); col[i * 3 + 1] = v * (1.0 + h * 0.3); col[i * 3 + 2] = v * (0.93 - h);
-    H[i] = ex * 0.8 + fine[i] * 0.15;
+    H[i] = ex * 0.35 + fine[i] * 0.15;
     R[i] = 0.93 - ex * 0.16 + (r() - 0.5) * 0.04;
   }
   // pores (dark voids between stones)
@@ -323,7 +327,7 @@ function asphaltMaps(S, aniso, seed, base) {
   }
   return {
     map: dtex(packRGB(col, S, S), S, S, aniso, true),
-    normal: nmap(H, S, S, 1.1, R, aniso),
+    normal: nmap(H, S, S, 0.5, R, aniso),
   };
 }
 
@@ -626,8 +630,9 @@ const ADS = [
 ];
 
 // billboard atlas: 8 boards stacked vertically (each 1024 x 128, ~8:1)
-function adsTex(aniso) {
-  const [c, ctx] = canvas(1024, 1024);
+function adsTex(aniso, scale = 1) {
+  const [c, ctx] = canvas(1024 * scale, 1024 * scale);
+  ctx.scale(scale, scale); // layout stays in 1024 px units
   ADS.forEach((a, k) => {
     const y = k * 128;
     ctx.fillStyle = a.bg; ctx.fillRect(0, y, 1024, 128);
@@ -650,9 +655,10 @@ function adsTex(aniso) {
 
 // white glyphs / shapes on transparent, tinted by vertex colour; regions in uv space
 export const DECALS = {};
-function decalTex(aniso) {
-  const S = 1024;
-  const [c, ctx] = canvas(S, S);
+function decalTex(aniso, scale = 1) {
+  const S = 1024; // layout units; the canvas is S * scale (regions are in uv)
+  const [c, ctx] = canvas(S * scale, S * scale);
+  ctx.scale(scale, scale);
   ctx.clearRect(0, 0, S, S);
   const reg = (name, x, y, w, h) => { DECALS[name] = [x / S, 1 - (y + h) / S, (x + w) / S, 1 - y / S]; };
   ctx.fillStyle = '#ffffff';
@@ -759,13 +765,21 @@ function leafTex(aniso) {
     const a = r() * Math.PI * 2;
     ctx.beginPath(); ctx.moveTo(128, 128); ctx.lineTo(128 + Math.cos(a) * 95, 128 + Math.sin(a) * 95); ctx.stroke();
   }
-  // leaves: inner and lower ones darker, outer / upper ones lighter
-  for (let k = 0; k < 1500; k++) {
-    const a = r() * Math.PI * 2, rad = Math.sqrt(r()) * 112;
-    const x = 128 + Math.cos(a) * rad, y = 128 + Math.sin(a) * rad;
+  // leaves in a few overlapping sprays, so the card outline is ragged rather
+  // than a disc; inner and lower ones darker, outer / upper ones lighter
+  const sprays = [[128, 128, 62]];
+  for (let k = 0; k < 6; k++) {
+    const a = k / 6 * Math.PI * 2 + r() * 0.6, d = 38 + r() * 18;
+    sprays.push([128 + Math.cos(a) * d, 128 + Math.sin(a) * d, 30 + r() * 16]);
+  }
+  for (let k = 0; k < 1900; k++) {
+    const [sx, sy, sr] = sprays[k % sprays.length];
+    const a = r() * Math.PI * 2, rr = Math.sqrt(r()) * sr;
+    const x = sx + Math.cos(a) * rr, y = sy + Math.sin(a) * rr;
+    const rad = Math.min(112, Math.hypot(x - 128, y - 128));
     const t = rad / 112, up = 1 - y / 256;
-    const l = 15 + t * 11 + up * 9 + (r() - 0.5) * 9;
-    ctx.fillStyle = `hsl(${84 + r() * 26}, ${30 + r() * 16}%, ${l}%)`;
+    const l = 11 + t * 8 + up * 6 + (r() - 0.5) * 9;
+    ctx.fillStyle = `hsl(${84 + r() * 26}, ${48 + r() * 17}%, ${l}%)`;
     ctx.save(); ctx.translate(x, y); ctx.rotate(a + (r() - 0.5) * 1.6);
     ctx.beginPath(); ctx.ellipse(0, 0, 6 + r() * 5, 2.6 + r() * 1.8, 0, 0, Math.PI * 2); ctx.fill();
     ctx.restore();
@@ -793,19 +807,21 @@ function crowdTex(aniso) {
 export function makeTextures(renderer, quality = 'high') {
   const hi = quality !== 'low';
   const maxA = renderer?.capabilities?.getMaxAnisotropy?.() || 4;
-  const aniso = Math.min(maxA, quality === 'high' ? 8 : 4);
+  // low: ground at grazing angles fills about half the screen, keep filtering cheap
+  const aniso = Math.min(maxA, quality === 'high' ? 8 : quality === 'medium' ? 4 : 2);
   const big = quality === 'high' ? 1024 : 512;
   NORMALS = hi;
   const T = {};
-  // metres per texture tile (geometry uvs are metres / tile)
-  T.tile = { grass: 3, asphalt: 4, concrete: 12, dirt: 6, gravel: 2, kerb: 2, belt: 2.4, wall: 4, paint: 3, fence: 0.25, hazard: 1 };
+  // metres per texture tile (geometry uvs are metres / tile); the asphalt tile
+  // shrinks with the texture so the aggregate keeps its real size (~18 mm)
+  T.tile = { grass: 3, asphalt: big >= 1024 ? 4 : 2, concrete: 12, dirt: 6, gravel: 2, kerb: 2, belt: 2.4, wall: 4, paint: 3, fence: 0.25, hazard: 1 };
   T.noise = noiseMap(hi ? 256 : 128);
   T.grass = grassMaps(big, aniso);
   const a = asphaltMaps(big, aniso, 17, 0.27);
   T.asphalt = a.map; T.asphaltN = a.normal;
   const cc = concreteMaps(big, aniso, 3);
   T.concrete = cc.map; T.concreteN = cc.normal;
-  const d = dirtMaps(hi ? 1024 : 512, aniso);
+  const d = dirtMaps(quality === 'high' ? 1024 : 512, aniso);
   T.dirt = d.map; T.dirtN = d.normal;
   const g = gravelMaps(hi ? 512 : 256, aniso);
   T.gravel = g.map; T.gravelN = g.normal;
@@ -819,15 +835,18 @@ export function makeTextures(renderer, quality = 'high') {
   T.hazard = hazardTex(aniso);
   T.target = targetTex(aniso);
   T.checker = checkerTex(aniso);
-  T.ads = adsTex(aniso);
+  // ground decals and boards are small on a phone screen: half size on low
+  const canvasScale = hi ? 1 : 0.5;
+  T.ads = adsTex(aniso, canvasScale);
   T.adCount = ADS.length;
-  T.decals = decalTex(aniso);
+  T.decals = decalTex(aniso, canvasScale);
   T.door = doorTex(aniso);
   T.glass = glassTex(aniso);
   T.cladding = claddingTex(aniso);
   T.honeycomb = honeycombTex(aniso);
   T.crowd = crowdTex(aniso);
-  T.leaves = leafTex(aniso);
+  // leaf-card atlas: only the card crowns (medium / high) use it
+  T.leaves = hi ? leafTex(aniso) : null;
   FIELDS.clear();
   return T;
 }

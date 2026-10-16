@@ -11,9 +11,12 @@ const HW = TRACK_WIDTH / 2;
 const SHIRTS = ['#1b1c1e', '#232427', '#2c2d30', '#e4e4df', '#d6d6d0', '#8d9093', '#5c6066', '#2b3a55', '#3b4f6e', '#4a5d7a',
   '#26324a', '#6b3a2a', '#8f1d1d', '#b02a24', '#c8a43a', '#2f5d3a', '#d06a1e', '#1f4f9a', '#5a4632', '#c9c2b0'];
 const lin = (hex) => { const c = new THREE.Color(hex); return [c.r, c.g, c.b]; };
-// Soffits (roof undersides) only see the grass-green bounce light and ground
-// reflections, which tinted pale roofs olive; a cool grey albedo compensates.
-const SOFFIT = [0.4, 0.3, 0.58];
+// Soffits (roof undersides) only see the bounce light and ground reflections:
+// a neutral, slightly cool grey (a tinted albedo read as lavender).
+const SOFFIT = [0.46, 0.45, 0.47];
+// small, flat or flush kit parts: their shadows are invisible or a pixel wide,
+// and each would be one more draw in the shadow pass
+const NO_CAST = new Set(['lamp', 'redLamp', 'door', 'ads', 'crowd', 'hazard', 'deck', 'target']);
 const soffit = (w, d) => new THREE.PlaneGeometry(w, d).rotateX(Math.PI / 2);
 
 // multi-material batch: one merged mesh per material key
@@ -33,7 +36,7 @@ export class Kit {
     for (const key in this.b) {
       const mat = this.env.M[key];
       const mesh = new THREE.Mesh(this.b[key].build(!!mat.vertexColors), mat);
-      mesh.castShadow = cast && this.env.q !== 'low' && !mat.transparent;
+      mesh.castShadow = cast && this.env.q !== 'low' && !mat.transparent && !NO_CAST.has(key);
       mesh.receiveShadow = receive;
       this.env.scene.add(mesh);
       out.push(mesh);
@@ -112,7 +115,7 @@ export function buildGantry(env, kit) {
     const g = new THREE.PlaneGeometry(Z * 1.6, 1.5).rotateY(dir < 0 ? -Math.PI / 2 : Math.PI / 2).translate(dir * 0.62, y0 + 0.55, 0);
     const uv = g.attributes.uv;
     for (let i = 0; i < uv.count; i++) uv.setY(i, 1 - (ad + 1 - uv.getY(i)) / n);
-    kit.add('ads', g, m);
+    kit.add('adsBanner', g, m);
   }
   // start light pod facing the grid (local -x)
   kit.box('paintVC', 0, y0 - 1.3, 0, 0.5, 1.2, 4.4, lin('#1a1c1e'), m);
@@ -217,15 +220,30 @@ export function buildPits(env, kit) {
   // paddock transporters behind the garages
   const r = rng(12);
   const liveries = ['#c8202a', '#1f4f9a', '#e9e9e6', '#1c1c1e', '#f0a020', '#2e7d4f'];
+  const tyre = new THREE.CylinderGeometry(0.5, 0.5, 0.32, 14).rotateZ(Math.PI / 2);
+  const hub = new THREE.CylinderGeometry(0.24, 0.24, 0.34, 8).rotateZ(Math.PI / 2);
   for (let k = 0; k < 6; k++) {
     const x = -96 + k * 31 + r() * 4, z = BZ + 9 + r() * 6;
     if (Math.abs(x + 30) < 12) continue;
-    const c = lin(liveries[k % liveries.length]);
-    kit.box('paintVC', x, 1.1, z, 2.5, 3.0, 13.5, c);
-    kit.box('paintVC', x, 0.6, z - 8.0, 2.5, 2.7, 2.4, c);
-    kit.box('glass', x, 2.0, z - 9.25, 2.3, 1.0, 0.05);
-    kit.box('rubber', x, 0, z + 3, 2.6, 1.0, 5);
-    kit.box('rubber', x, 0, z - 7.4, 2.6, 1.0, 1.4);
+    // livery a quarter desaturated: corrugated trailer sides, painted cab
+    const lc = new THREE.Color(liveries[k % liveries.length]);
+    const lum = lc.r * 0.2126 + lc.g * 0.7152 + lc.b * 0.0722;
+    const c = [lc.r + (lum - lc.r) * 0.25, lc.g + (lum - lc.g) * 0.25, lc.b + (lum - lc.b) * 0.25];
+    const zb = z + 6.75, zf = z - 6.75; // trailer back / front
+    kit.box('cladding', x, 1.5, z, 2.5, 2.6, 13.5, c.map(v => v * 1.3), null, boxUV(3));
+    kit.box('paintVC', x, 4.1, z, 2.54, 0.1, 13.54, lin('#c9cbcc'));        // roof cap
+    kit.box('paintVC', x, 1.1, z, 2.46, 0.4, 13.4, lin('#26292c'));         // skirt
+    kit.box('paintVC', x, 0.55, z - 1.2, 1.0, 0.3, 15.2, lin('#1a1b1d'));   // chassis rail
+    // tractor cab ahead of the trailer, with a windscreen
+    const cz = zf - 0.3 - 1.1;
+    kit.box('paintVC', x, 0.85, cz, 2.5, 2.4, 2.2, c);
+    kit.box('paintVC', x, 0.5, cz - 0.9, 2.52, 0.35, 0.5, lin('#2a2c2f'));  // bumper
+    kit.add('glass', new THREE.PlaneGeometry(2.2, 0.95).rotateY(Math.PI).translate(x, 2.55, cz - 1.115));
+    // wheels: three axles under the trailer, one under the cab
+    for (const az of [zb - 1.4, zb - 2.5, zb - 3.6, cz + 0.2]) for (const s of [-1, 1]) {
+      kit.add('rubber', tyre, trs(x + s * 1.02, 0.5, az, 0));
+      kit.add('steel', hub, trs(x + s * 1.03, 0.5, az, 0));
+    }
   }
   env.blockRect(-110, BZ, 100, BZ + 26);
 }
@@ -363,9 +381,15 @@ export function buildInfield(env, kit, cones) {
   ['n10', 'n20', 'n30', 'n40', 'n50', 'n60'].forEach((nm, k) => env.decal(nm, -100 + (k + 1) * 20 - 3, -135.6, 2.2, 2.2, 0, W));
   env.decal('STOP', 66, -144, 8, 2, 0, Y);
   ['n1', 'n2', 'n3'].forEach((nm, k) => env.decal(nm, -128.5, -148 + k * 4, 1.8, 1.8, 0, W));
-  for (const zz of lz) cones.push([-125, zz], [62, zz]);
+  // Cones would have no colliders, so markers that sit in a driving line are
+  // painted discs instead (start of the braking lanes and the slalom gates).
+  const O = 0xff6a1a;
+  for (const zz of lz) cones.push([-125, zz]), env.paintArc(62, zz, 0.16, 0.32, 0, Math.PI * 2, O);
   // slalom
-  for (let k = 0; k < 7; k++) cones.push([-118 + k * 9, 18 + (k % 2) * 0.01]);
+  for (let k = 0; k < 7; k++) {
+    env.paintArc(-118 + k * 9, 18, 0.2, 0.4, 0, Math.PI * 2, O);
+    env.paintArc(-118 + k * 9, 18, 0.55, 0.1, 0, Math.PI * 2, W);
+  }
   env.paintLine(-124, 14, -60, 14, 0.12, W); env.paintLine(-124, 22, -60, 22, 0.12, W);
   // crash wall approach lane
   env.paintLine(-30, 14, 38, 14, 0.2, Y); env.paintLine(-30, 26, 38, 26, 0.2, Y);
@@ -443,28 +467,30 @@ export function buildLabProps(env, kit, cones) {
     env.decal('n' + k * 10, x - 1.6, z0 + 8, 2, 2, 0, W);
   }
   env.decal('CRASHLAB', x0 - 12, z0 - 9, 10, 1.4, -Math.PI / 2, W);
-  // camera / light gantry over the impact zone
-  const gx = x0 + 1.5;
-  for (const s of [-1, 1]) latticeTower(kit, 'steelVC', gx, z0 + s * 9.5, 0.9, 7.5, [0.85, 0.86, 0.88]);
-  for (const [dx, y] of [[-0.45, 6.7], [0.45, 6.7], [-0.45, 7.5], [0.45, 7.5]]) bar(kit, 'steelVC', V(gx + dx, y, z0 - 9.5), V(gx + dx, y, z0 + 9.5), 0.1, [0.85, 0.86, 0.88]);
+  // camera / light gantry over the impact zone. Everything standing on the
+  // ground is outside the jersey rails (z0 +- 23.4, no colliders here), so cars
+  // can't drive through it; only overhead members cross the strip.
+  const gx = x0 + 1.5, GZ = 24.6, OUT = 24.4;
+  for (const s of [-1, 1]) latticeTower(kit, 'steelVC', gx, z0 + s * GZ, 0.9, 7.5, [0.85, 0.86, 0.88]);
+  for (const [dx, y] of [[-0.45, 6.7], [0.45, 6.7], [-0.45, 7.5], [0.45, 7.5]]) bar(kit, 'steelVC', V(gx + dx, y, z0 - GZ), V(gx + dx, y, z0 + GZ), 0.1, [0.85, 0.86, 0.88]);
   for (let k = 0; k < 4; k++) {
     const zz = z0 - 6 + k * 4;
     kit.box('paintVC', gx, 6.0, zz, 0.5, 0.6, 0.5, lin('#202326'));
     kit.box('paintVC', gx, 5.75, zz, 0.2, 0.25, 0.2, lin('#101112'));
   }
   for (const s of [-1, 1]) {
-    // side light rigs aimed at the barrier
-    const z = z0 + s * 9.5;
+    // side light rigs aimed at the barrier (taller, from beyond the rails)
+    const z = z0 + s * OUT;
     for (let k = 0; k < 3; k++) {
       const lx = x0 - 10 + k * 5;
-      kit.box('steel', lx, 0, z, 0.12, 4.2, 0.12);
-      const lm = trs(lx, 4.2, z, s > 0 ? Math.PI : 0).multiply(new THREE.Matrix4().makeRotationX(0.75));
+      kit.box('steel', lx, 0, z, 0.12, 6.2, 0.12);
+      const lm = trs(lx, 6.2, z, s > 0 ? Math.PI : 0).multiply(new THREE.Matrix4().makeRotationX(0.55));
       kit.box('paintVC', 0, 0, 0, 1.2, 0.7, 0.3, lin('#26292c'), lm);
       for (const dx of [-0.3, 0.3]) kit.add('lamp', new THREE.PlaneGeometry(0.46, 0.5).translate(dx, 0.35, 0.155), lm);
     }
     // calibration target boards on stands
     for (const dx of [-4, 4]) {
-      const bx = x0 + dx, bz = z0 + s * 7;
+      const bx = x0 + dx, bz = z0 + s * OUT;
       kit.box('steel', bx, 0, bz, 0.08, 1.2, 0.08);
       kit.add('target', new THREE.PlaneGeometry(1.1, 1.1).rotateY(s > 0 ? Math.PI : 0).translate(bx, 1.75, bz));
     }

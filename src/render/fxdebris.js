@@ -78,6 +78,9 @@ export class RigidPool {
     this.mesh.castShadow = !!opts.castShadow;
     this.mesh.receiveShadow = true;
     this.mesh.visible = false;
+    // only the slots up to the highest live one are drawn (dead slots below it are
+    // zero-scale); the ring cursor restarts at 0 whenever the pool empties
+    this.mesh.count = 0;
     scene.add(this.mesh);
     this.dirtyLo = n; this.dirtyHi = -1;
     this.colorDirty = false;
@@ -104,6 +107,7 @@ export class RigidPool {
       this.mesh.setColorAt(i, _c);
       this.colorDirty = true;
     }
+    if (i >= this.mesh.count) this.mesh.count = i + 1;
     this.mesh.visible = true;
   }
 
@@ -113,7 +117,7 @@ export class RigidPool {
     const { p, v, q, w, s, state, timer } = this;
     const arr = this.mesh.instanceMatrix.array;
     const air = Math.exp(-0.25 * dt);
-    let lo = this.dirtyLo, hi = this.dirtyHi, active = 0;
+    let lo = this.dirtyLo, hi = this.dirtyHi, active = 0, top = -1;
     for (let i = 0; i < this.max; i++) {
       const st = state[i];
       if (st === 0) continue;
@@ -130,7 +134,7 @@ export class RigidPool {
           continue;
         }
         if (glint && glint.rateRest > 0 && Math.random() < glint.rateRest * dt) glint.emit(p[i3], p[i3 + 1] + 0.01, p[i3 + 2], 0, 0, 0);
-        if (left > 1.5) continue; // static: matrix already written
+        if (left > 1.5) { top = i; continue; } // static: matrix already written
         scale = left / 1.5;
       } else {
         // flying / tumbling
@@ -185,6 +189,7 @@ export class RigidPool {
         }
         q[i4] = _q.x; q[i4 + 1] = _q.y; q[i4 + 2] = _q.z; q[i4 + 3] = _q.w;
       }
+      top = i;
       _p.set(p[i3], p[i3 + 1], p[i3 + 2]);
       _q.set(q[i4], q[i4 + 1], q[i4 + 2], q[i4 + 3]);
       _s.set(s[i3] * scale, s[i3 + 1] * scale, s[i3 + 2] * scale);
@@ -198,7 +203,8 @@ export class RigidPool {
       this.mesh.instanceColor.needsUpdate = true;
       this.colorDirty = false;
     }
-    if (active === 0) this.mesh.visible = false;
+    this.mesh.count = top + 1;
+    if (active === 0) { this.mesh.visible = false; this.cursor = 0; }
   }
 
   clear() {
@@ -206,6 +212,8 @@ export class RigidPool {
     for (let i = 0; i < this.max; i++) ZERO.toArray(arr, i * 16);
     this.state.fill(0);
     this.active = 0;
+    this.cursor = 0;
+    this.mesh.count = 0;
     this.mesh.instanceMatrix.clearUpdateRanges();
     this.mesh.instanceMatrix.needsUpdate = true;
     this.mesh.visible = false;

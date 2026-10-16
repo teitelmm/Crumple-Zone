@@ -15,7 +15,7 @@ import * as THREE from 'three';
 import { Environment } from './environment.js';
 import { SkyDome, SUN_DIR, SUN_COLOR, SUN_ILLUMINANCE, HORIZON_COLOR, SKY_IRRADIANCE, hazeRadiance } from './sky.js';
 import { SunRig, installLightingChunks } from './lighting.js';
-import { createPost, installToneMapping } from './post.js';
+import { createPost, installToneMapping, probePostSupport } from './post.js';
 
 // sunlit 18% grey -> ~60% sRGB, sunlit white ~91%, clouds ~95%, shaded asphalt
 // ~17% (see the tone curve in post.js)
@@ -32,14 +32,19 @@ function pixelRatioFor(quality, w, h) {
 }
 
 export function createRenderer(canvas, quality) {
-  installLightingChunks();
-  // MSAA happens in the HDR target on 'high', FXAA on 'medium'; the canvas itself never needs it
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, stencil: false, powerPreference: 'high-performance' });
+  installLightingChunks(quality);
+  // With post-processing, MSAA happens in the HDR target ('high') or FXAA runs
+  // ('medium'), so the canvas doesn't need it. Without ('low', or no half-float
+  // targets) the canvas gets MSAA: nearly free on tile-based mobile GPUs, and the
+  // thin kerbs, rails, posts and building edges crawl without it.
+  const direct = quality === 'low' || !probePostSupport();
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: direct, stencil: false, powerPreference: 'high-performance' });
   renderer.setPixelRatio(pixelRatioFor(quality, window.innerWidth, window.innerHeight));
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   installToneMapping(renderer, EXPOSURE);
   renderer.shadowMap.enabled = quality !== 'low';
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  // 'medium': PCFShadowMap is patched to a 4-tap bilinear PCF (lighting.js)
+  renderer.shadowMap.type = quality === 'high' ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
   renderer.setClearColor(HORIZON_COLOR, 1);
   return renderer;
 }
@@ -90,6 +95,20 @@ export class WorldView {
 
     this.env = new Environment(this);
     this.post = createPost(renderer, scene, quality, EXPOSURE);
+
+    // A lost context (phones backgrounding the tab, GPU resets) comes back with
+    // every render-target texture empty. Data/canvas textures and per-frame
+    // targets refill themselves, but the prefiltered environment would stay
+    // black, leaving PBR surfaces (whose hemisphere fill is off, see
+    // lighting.js) with no ambient light. Rebuild it; three's own restore
+    // handler was registered first, so the renderer is ready by now.
+    this._onContextRestored = () => {
+      // the old target's GL objects died with the context: drop it, don't dispose
+      // it (its listeners belong to the pre-loss renderer state)
+      this.skyDome.envRT = null;
+      scene.environment = this.skyDome.buildEnvironment(renderer);
+    };
+    renderer.domElement.addEventListener('webglcontextrestored', this._onContextRestored);
   }
 
   // horizon haze (linear radiance) toward `dir`, scaled by any fog colour change

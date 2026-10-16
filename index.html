@@ -128,10 +128,11 @@ select { background: var(--panel-solid); color: var(--fg); border: 1px solid var
 dd[data-state=warn] { color: var(--hazard); }
 dd[data-state=bad] { color: var(--alarm); }
 #speedo { position: absolute; right: calc(16px + var(--sar)); bottom: calc(14px + var(--sab)); width: 190px; height: 190px; }
+body:not(.touch) #speedo { border-radius: 50%; background: radial-gradient(circle, rgba(12,14,17,0.6) 0 58%, rgba(12,14,17,0.35) 66%, transparent 72%); }
 #tach { position: absolute; inset: 0; width: 100%; height: 100%; }
 .dial { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-shadow: 0 1px 8px rgba(0,0,0,0.55); }
 #spd { font-family: var(--font-display); font-weight: 800; font-size: 58px; line-height: 0.9; font-variant-numeric: tabular-nums; }
-#unit { font-family: var(--font-display); font-weight: 600; font-size: 13px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--mute); }
+#unit { font-family: var(--font-display); font-weight: 600; font-size: 13px; letter-spacing: 0.18em; text-transform: uppercase; color: #c9cfd4; }
 #gear { margin-top: 6px; font-family: var(--font-display); font-weight: 800; font-size: 22px; color: var(--hazard); width: 34px; height: 34px; border: 2px solid var(--hazard); border-radius: 50%; display: grid; place-items: center; }
 .flags { position: absolute; bottom: 4px; left: 0; right: 0; display: flex; justify-content: center; gap: 6px; }
 .flag { font-family: var(--font-display); font-weight: 700; font-size: 11px; letter-spacing: 0.12em; padding: 1px 6px; border-radius: 3px; border: 1px solid var(--line); color: var(--mute); }
@@ -141,10 +142,11 @@ dd[data-state=bad] { color: var(--alarm); }
 #topbar button { width: 42px; height: 42px; border-radius: 50%; background: var(--panel); border: 1px solid var(--line); display: grid; place-items: center; padding: 0; touch-action: none; }
 #topbar button:hover { border-color: rgba(255,255,255,0.4); }
 #topbar svg { width: 20px; height: 20px; stroke: var(--fg); fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-#banner { position: absolute; left: 50%; top: 32%; transform: translate(-50%, -50%) scale(0.96); text-align: center; opacity: 0; transition: opacity .25s, transform .25s; width: min(90vw, 640px); text-shadow: 0 2px 16px rgba(0,0,0,0.6); }
+/* the banner sits over the bright horizon band: a soft dark scrim keeps it readable */
+#banner { position: absolute; left: 50%; top: 26%; transform: translate(-50%, -50%) scale(0.96); text-align: center; opacity: 0; transition: opacity .25s, transform .25s; width: min(90vw, 680px); padding: 18px 28px; border-radius: 40px; background: radial-gradient(ellipse at center, rgba(8,10,12,0.55) 0, rgba(8,10,12,0.3) 45%, transparent 70%); text-shadow: 0 0 2px rgba(0,0,0,0.85), 0 2px 18px rgba(0,0,0,0.7); }
 #banner.show { opacity: 1; transform: translate(-50%, -50%) scale(1); }
 .b-title { font-family: var(--font-display); font-weight: 800; font-size: clamp(36px, 7vw, 92px); line-height: 0.95; text-transform: uppercase; letter-spacing: 0.02em; }
-.b-sub { font-size: 16px; color: #dfe3e6; margin-top: 8px; text-wrap: balance; }
+.b-sub { font-size: 16px; font-weight: 600; color: #fff; margin-top: 8px; text-wrap: balance; }
 #toast { position: absolute; left: 50%; top: calc(64px + var(--sat)); transform: translateX(-50%); background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--hazard); border-radius: var(--r); padding: 8px 14px; font-family: var(--font-display); font-weight: 600; font-size: 16px; letter-spacing: 0.04em; opacity: 0; transition: opacity .2s; white-space: nowrap; }
 #toast.show { opacity: 1; }
 #keyHint { position: absolute; left: calc(12px + var(--sal)); bottom: calc(12px + var(--sab)); font-size: 12px; color: rgba(255,255,255,0.7); text-shadow: 0 1px 4px rgba(0,0,0,0.7); line-height: 1.7; }
@@ -156,6 +158,9 @@ body.touch .dial { position: static; flex-direction: row; align-items: baseline;
 body.touch #spd { font-size: 34px; }
 body.touch #gear { margin: 0 0 0 4px; align-self: center; width: 30px; height: 30px; font-size: 18px; }
 body.touch #damagePanel { padding: 8px; }
+/* phones: no backdrop blur over the live WebGL canvas (re-blurred every frame); slightly denser panels instead */
+body.touch #hud .panel, body.touch #topbar button { backdrop-filter: none; -webkit-backdrop-filter: none; background: rgba(15,17,20,0.86); }
+body.touch #touch button { backdrop-filter: none; -webkit-backdrop-filter: none; }
 @media (max-width: 760px), (max-height: 480px) {
   #modePanel { min-width: 0; padding: 6px 9px; }
   #modeInfo div:nth-child(n+3) { display: none; }
