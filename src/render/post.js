@@ -62,12 +62,12 @@ vec3 czToneMap( vec3 color ) {
   // less in deep shadow (skylight already tints them blue) and in highlights
   // (keeps sunlit red paint from clipping).
   float luma = dot( color, vec3( 0.2126, 0.7152, 0.0722 ) );
-  float sat = mix( 1.12, 1.32, smoothstep( 0.08, 0.3, luma ) ) * ( 1.0 - 0.2 * smoothstep( 0.5, 0.9, luma ) );
+  float sat = mix( 1.22, 1.52, smoothstep( 0.08, 0.3, luma ) ) * ( 1.0 - 0.18 * smoothstep( 0.55, 0.92, luma ) );
   color = luma + sat * ( color - luma );
   color = outset * color;
   // gentle S-curve in display space: deeper blacks (no hazy, lifted shadows),
   // middle grey stays put, highlights a touch brighter
-  color += 0.12 * ( color * color * ( 3.0 - 2.0 * color ) - color );
+  color += 0.22 * ( color * color * ( 3.0 - 2.0 * color ) - color );
   color = pow( max( color, 0.0 ), vec3( 2.2 ) );
   return clamp( fromRec2020 * color, 0.0, 1.0 );
 }
@@ -217,7 +217,7 @@ void main() {
   vec3 c = czToneMap( hdr * uExposure );
   // grade: faintly warm highlights; shadows only a touch cool (skylight already tints them)
   float l = dot( c, vec3( 0.2126, 0.7152, 0.0722 ) );
-  c *= mix( vec3( 0.99, 1.0, 1.015 ), vec3( 1.015, 1.0, 0.98 ), smoothstep( 0.05, 0.6, l ) );
+  c *= mix( vec3( 0.98, 1.0, 1.03 ), vec3( 1.03, 1.0, 0.96 ), smoothstep( 0.05, 0.6, l ) );
   // vignette
   vec2 q = ( vUv - 0.5 ) * vec2( uAspect, 1.0 );
   float r2 = dot( q, q ) / ( 0.25 * ( uAspect * uAspect + 1.0 ) );
@@ -321,8 +321,8 @@ const AO_FAR = 150;
 
 // radius < 0.5 favours the tight mips, so what still blooms stays close to the highlight
 const BLOOM = {
-  high: { strength: 0.32, radius: 0.4, threshold: 3.2, downscale: 1 },
-  medium: { strength: 0.28, radius: 0.35, threshold: 3.2, downscale: 2 },
+  high: { strength: 0.42, radius: 0.4, threshold: 3.2, downscale: 1 },
+  medium: { strength: 0.36, radius: 0.35, threshold: 3.2, downscale: 2 },
 };
 
 export class PostFX {

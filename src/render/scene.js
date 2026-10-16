@@ -19,7 +19,7 @@ import { createPost, installToneMapping, probePostSupport } from './post.js';
 
 // sunlit 18% grey -> ~60% sRGB, sunlit white ~91%, clouds ~95%, shaded asphalt
 // ~17% (see the tone curve in post.js)
-const EXPOSURE = 0.85;
+const EXPOSURE = 0.93;
 // pixel budgets (drawing-buffer pixels) per tier; the tier caps DPR as before
 const DPR_CAP = { high: 2, medium: 1.25, low: 1.25 };
 const PIXEL_BUDGET = { high: 2560 * 1440, medium: 1920 * 1080, low: 1280 * 720 * 1.1 };
